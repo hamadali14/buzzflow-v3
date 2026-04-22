@@ -27,6 +27,16 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function slugify(value = '') {
+  return String(value)
+    .toLowerCase()
+    .trim()
+    .replace(/https?:\/\//g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60) || `form-${Date.now()}`;
+}
+
 function sameJson(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
@@ -120,6 +130,29 @@ function defaultFormPresentation(form = {}) {
     submitLabel: form.submitLabel || 'Submit',
     successMessage: form.successMessage || 'Thanks. We received your submission and will follow up shortly.',
     description: form.description || '',
+    thankYouTitle: form.thankYouTitle || 'Submission received',
+    thankYouBody: form.thankYouBody || 'Thanks. We received your submission and will review it shortly.',
+    redirectUrl: form.redirectUrl || '',
+    publicDomain: form.publicDomain || '',
+  };
+}
+
+function defaultAutomationRules() {
+  return [
+    { id: 'rule-budget-high', field: 'budget', operator: 'gte', value: '50000', action: 'createUrgentTask', enabled: true },
+    { id: 'rule-score-hot', field: 'score', operator: 'gte', value: '80', action: 'tagLeadHot', enabled: true },
+    { id: 'rule-urgency-fast', field: 'urgency', operator: 'contains', value: 'urgent', action: 'queueEmail', enabled: true },
+  ];
+}
+
+function defaultFormIntegrations(form = {}) {
+  return {
+    slackEnabled: Boolean(form.integrations?.slackEnabled),
+    crmEnabled: Boolean(form.integrations?.crmEnabled),
+    supabaseEnabled: Boolean(form.integrations?.supabaseEnabled),
+    slackWebhook: form.integrations?.slackWebhook || '',
+    crmWebhook: form.integrations?.crmWebhook || '',
+    supabaseTable: form.integrations?.supabaseTable || '',
   };
 }
 
@@ -257,6 +290,29 @@ function normalizeInvoice(invoice = {}, index = 0) {
   };
 }
 
+function formatFileSize(bytes = 0) {
+  const size = Number(bytes) || 0;
+  if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  if (size >= 1024) return `${Math.round(size / 1024)} KB`;
+  return `${size} B`;
+}
+
+function normalizeFile(file = {}, index = 0) {
+  const bytes = Number(file.sizeBytes) || 0;
+  return {
+    ...file,
+    id: file.id || `F-${String(index + 1).padStart(3, '0')}`,
+    name: file.name || file.fileName || 'untitled-file',
+    type: file.type || file.mimeType || 'File',
+    mimeType: file.mimeType || file.type || 'application/octet-stream',
+    sizeBytes: bytes,
+    size: file.size || formatFileSize(bytes),
+    linked: file.linked || 'Lead L-1048',
+    uploaded: file.uploaded || buildRelativeTime(),
+    contentUrl: file.contentUrl || '',
+  };
+}
+
 function deriveCustomerHealth(customer, state) {
   const invoices = (state.invoices || []).filter((invoice) => invoice.customerId === customer.id || invoice.customer === customer.name || invoice.customer === customer.companyName);
   const tasks = (state.tasks || []).filter((task) => task.related?.id === customer.id || task.related?.id === customer.sourceLeadId || task.related?.label === customer.name || task.related?.label === customer.companyName);
@@ -390,9 +446,16 @@ function withFormDefaults(form, index = 0) {
     submitLabel: presentation.submitLabel,
     successMessage: presentation.successMessage,
     description: presentation.description,
+    thankYouTitle: presentation.thankYouTitle,
+    thankYouBody: presentation.thankYouBody,
+    redirectUrl: presentation.redirectUrl,
+    publicDomain: presentation.publicDomain,
+    publicSlug: form.publicSlug || slugify(form.publicDomain || form.name || form.id || `form-${index + 1}`),
     notifyEmail: form.notifyEmail || automation.notifyEmail || DEFAULT_NOTIFY_EMAIL,
     owners: Array.isArray(form.owners) && form.owners.length ? form.owners : automation.owners,
     defaultOwner: form.defaultOwner || automation.defaultOwner,
+    automationRules: Array.isArray(form.automationRules) && form.automationRules.length ? form.automationRules : defaultAutomationRules(),
+    integrations: defaultFormIntegrations(form),
     automation,
     rules: form.rules || countAutomationRules({ ...form, automation }),
   };
@@ -408,6 +471,7 @@ function normalizeStateShape(nextState) {
     tasks: (nextState.tasks || []).map((task, index) => normalizeTask(task, index)),
     invoices: (nextState.invoices || []).map((invoice, index) => normalizeInvoice(invoice, index)),
     communications: (nextState.communications || []).map((item, index) => normalizeCommunication(item, index)),
+    files: (nextState.files || []).map((file, index) => normalizeFile(file, index)),
   };
   return {
     ...normalized,
@@ -456,6 +520,142 @@ function buildLeadValue(raw = {}, score = 0) {
   const budget = parseBudgetValue(raw);
   const value = budget || Math.round(score * 950);
   return moneyValue(value.toLocaleString('en-US'));
+}
+
+function evaluateRule(fieldValue, operator, expectedValue) {
+  if (operator === 'gte') return Number(fieldValue || 0) >= Number(expectedValue || 0);
+  if (operator === 'contains') return String(fieldValue || '').toLowerCase().includes(String(expectedValue || '').toLowerCase());
+  if (operator === 'equals') return String(fieldValue || '') === String(expectedValue || '');
+  if (operator === 'exists') return Array.isArray(fieldValue) ? fieldValue.length > 0 : Boolean(fieldValue);
+  return false;
+}
+
+function applySubmissionAutomationRules({ form, raw = {}, score, priority, leadId, leadName, owner, state }) {
+  const budget = parseBudgetValue(raw);
+  const urgency = submissionUrgency(raw);
+  const metrics = {
+    budget,
+    score,
+    urgency,
+    phonePresent: Boolean(raw.phone || raw.Phone || raw['Phone Number']),
+  };
+  let nextState = state;
+  const rules = Array.isArray(form.automationRules) ? form.automationRules.filter((rule) => rule?.enabled) : [];
+
+  rules.forEach((rule, index) => {
+    if (!evaluateRule(metrics[rule.field], rule.operator, rule.value)) return;
+
+    if (rule.action === 'createUrgentTask') {
+      nextState = {
+        ...nextState,
+        tasks: prepend(nextState.tasks, normalizeTask({
+          id: `RULE-T-${Date.now()}-${index}`,
+          title: `Urgent review for ${leadName}`,
+          related: { type: 'lead', id: leadId, label: leadName },
+          link: leadName,
+          type: 'call',
+          status: 'todo',
+          priority: 'high',
+          owner,
+          assignedBy: 'Rule engine',
+          due: 'Today',
+          dueDate: todayIso(),
+          notes: `Triggered by automation rule: ${rule.field} ${rule.operator} ${rule.value}.`,
+          watchers: [owner],
+          collaborators: [],
+        }, nextState.tasks.length)),
+      };
+      nextState = withAudit(nextState, { what: 'Rule task created', object: leadName, old: '-', next: 'todo', actor: 'Rule engine' });
+    }
+
+    if (rule.action === 'queueEmail') {
+      nextState = addCommunication(nextState, normalizeCommunication({
+        id: `RULE-COM-${Date.now()}-${index}`,
+        title: `${form.name} automation email`,
+        detail: `Queued from automation rule on ${rule.field}.`,
+        body: `Automation email queued for ${leadName}. Priority ${priority}.`,
+        owner,
+        type: 'email',
+        status: 'queued',
+        internal: false,
+        template: 'follow-up',
+        scheduledFor: '',
+        related: { type: 'lead', id: leadId, label: leadName },
+        linked: `Lead ${leadId}`,
+        threadId: leadId,
+      }, nextState.communications.length));
+      nextState = withAudit(nextState, { what: 'Rule email queued', object: leadName, old: '-', next: rule.field, actor: 'Rule engine' });
+    }
+
+    if (rule.action === 'tagLeadHot') {
+      nextState = {
+        ...nextState,
+        leads: nextState.leads.map((lead) => (
+          lead.id === leadId
+            ? {
+                ...lead,
+                tags: Array.from(new Set([...(lead.tags || []), 'hot'])),
+                qualificationStatus: lead.qualificationStatus === 'new' ? 'qualified' : lead.qualificationStatus,
+              }
+            : lead
+        )),
+      };
+      nextState = withAudit(nextState, { what: 'Lead tagged hot', object: leadName, old: '-', next: 'hot', actor: 'Rule engine' });
+    }
+  });
+
+  if (form.integrations?.slackEnabled && form.integrations?.slackWebhook) {
+    nextState = addCommunication(nextState, normalizeCommunication({
+      id: `INT-SLACK-${Date.now()}`,
+      title: `${form.name} Slack webhook queued`,
+      detail: `Outbound event prepared for Slack webhook.`,
+      body: `Lead ${leadName} queued for Slack webhook delivery.`,
+      owner,
+      type: 'note',
+      status: 'queued',
+      internal: true,
+      template: 'internal-update',
+      related: { type: 'lead', id: leadId, label: leadName },
+      linked: `Lead ${leadId}`,
+      threadId: leadId,
+    }, nextState.communications.length));
+  }
+
+  if (form.integrations?.crmEnabled && form.integrations?.crmWebhook) {
+    nextState = addCommunication(nextState, normalizeCommunication({
+      id: `INT-CRM-${Date.now()}`,
+      title: `${form.name} CRM sync queued`,
+      detail: `Outbound event prepared for CRM webhook.`,
+      body: `Lead ${leadName} queued for CRM sync.`,
+      owner,
+      type: 'note',
+      status: 'queued',
+      internal: true,
+      template: 'internal-update',
+      related: { type: 'lead', id: leadId, label: leadName },
+      linked: `Lead ${leadId}`,
+      threadId: leadId,
+    }, nextState.communications.length));
+  }
+
+  if (form.integrations?.supabaseEnabled && form.integrations?.supabaseTable) {
+    nextState = addCommunication(nextState, normalizeCommunication({
+      id: `INT-SUPABASE-${Date.now()}`,
+      title: `${form.name} Supabase sync queued`,
+      detail: `Outbound row prepared for ${form.integrations.supabaseTable}.`,
+      body: `Lead ${leadName} queued for Supabase table sync.`,
+      owner,
+      type: 'note',
+      status: 'queued',
+      internal: true,
+      template: 'internal-update',
+      related: { type: 'lead', id: leadId, label: leadName },
+      linked: `Lead ${leadId}`,
+      threadId: leadId,
+    }, nextState.communications.length));
+  }
+
+  return nextState;
 }
 
 function pickOwner(leads = [], owners = DEFAULT_OWNERS, fallback = 'Alex') {
@@ -534,7 +734,14 @@ export function BuzzProvider({ children }) {
           defaultOwner: DEFAULT_OWNERS[state.forms.length % DEFAULT_OWNERS.length],
           submitLabel: 'Submit',
           successMessage: 'Thanks. We received your submission and will follow up shortly.',
+          thankYouTitle: 'Submission received',
+          thankYouBody: 'Thanks. We received your submission and will review it shortly.',
+          redirectUrl: '',
+          publicDomain: '',
           description: '',
+          automationRules: defaultAutomationRules(),
+          integrations: defaultFormIntegrations(),
+          publicSlug: slugify(name || id),
           automation: defaultFormAutomation({}, state.forms.length),
         };
         let nextState = { ...current, forms: prepend(current.forms, withFormDefaults(nextForm, current.forms.length), 100) };
@@ -976,17 +1183,20 @@ export function BuzzProvider({ children }) {
       return id;
     };
 
-    const uploadFile = ({ name, linked = 'Lead L-1048', type = 'PDF', size = '0.4 MB' }) => {
+    const uploadFile = ({ name, linked = 'Lead L-1048', type = 'File', size = '', sizeBytes = 0, mimeType = '', contentUrl = '' }) => {
       const id = `F-${Date.now().toString().slice(-6)}`;
       setState((current) => {
-        const nextFile = {
+        const nextFile = normalizeFile({
           id,
           name: name || 'new-file.pdf',
           type,
           size,
+          sizeBytes,
+          mimeType,
+          contentUrl,
           linked,
           uploaded: buildRelativeTime(),
-        };
+        }, current.files.length);
         let nextState = { ...current, files: prepend(current.files, nextFile) };
         nextState = withAudit(nextState, { what: 'File uploaded', object: nextFile.name, old: '-', next: linked, actor: 'Alex' });
         return finalizeState(nextState);
@@ -1176,7 +1386,7 @@ export function BuzzProvider({ children }) {
       }));
     };
 
-    const updateForm = ({ id, title, fields, published, color, automation, submitLabel, successMessage, description, notifyEmail, owners, defaultOwner, multiStepEnabled }) => {
+    const updateForm = ({ id, title, fields, published, color, automation, submitLabel, successMessage, thankYouTitle, thankYouBody, redirectUrl, publicDomain, publicSlug, description, notifyEmail, owners, defaultOwner, multiStepEnabled, automationRules, integrations }) => {
       setState((current) => {
         const existing = current.forms.find((item) => item.id === id);
         const nextFields = fields || existing?.field_schema || [];
@@ -1195,11 +1405,18 @@ export function BuzzProvider({ children }) {
           endpoint: existing?.endpoint || `/embed/${id || `form-${Date.now()}`}`,
           submitLabel: submitLabel || existing?.submitLabel,
           successMessage: successMessage || existing?.successMessage,
+          thankYouTitle: typeof thankYouTitle === 'string' ? thankYouTitle : existing?.thankYouTitle,
+          thankYouBody: typeof thankYouBody === 'string' ? thankYouBody : existing?.thankYouBody,
+          redirectUrl: typeof redirectUrl === 'string' ? redirectUrl : existing?.redirectUrl,
+          publicDomain: typeof publicDomain === 'string' ? publicDomain : existing?.publicDomain,
+          publicSlug: typeof publicSlug === 'string' && publicSlug ? slugify(publicSlug) : slugify((typeof publicDomain === 'string' ? publicDomain : existing?.publicDomain) || title || existing?.name || id),
           description: typeof description === 'string' ? description : existing?.description,
           notifyEmail: notifyEmail || existing?.notifyEmail || DEFAULT_NOTIFY_EMAIL,
           owners: owners || existing?.owners || DEFAULT_OWNERS,
           defaultOwner: defaultOwner || existing?.defaultOwner || 'Alex',
           multiStepEnabled: typeof multiStepEnabled === 'boolean' ? multiStepEnabled : Boolean(existing?.multiStepEnabled),
+          automationRules: Array.isArray(automationRules) ? automationRules : existing?.automationRules,
+          integrations: integrations || existing?.integrations,
           automation: { ...(existing?.automation || defaultFormAutomation(existing || {}, current.forms.length)), ...(automation || {}) },
         }, current.forms.findIndex((item) => item.id === id));
         const forms = existing
@@ -1250,10 +1467,17 @@ export function BuzzProvider({ children }) {
         submitLabel: builderSession.submitLabel,
         successMessage: builderSession.successMessage,
         description: builderSession.description,
+        thankYouTitle: builderSession.thankYouTitle,
+        thankYouBody: builderSession.thankYouBody,
+        redirectUrl: builderSession.redirectUrl,
+        publicDomain: builderSession.publicDomain,
+        publicSlug: builderSession.publicSlug,
         notifyEmail: builderSession.notifyEmail,
         owners: builderSession.owners,
         defaultOwner: builderSession.defaultOwner,
         multiStepEnabled: builderSession.multiStepEnabled,
+        automationRules: builderSession.automationRules,
+        integrations: builderSession.integrations,
       });
       setBuilderSessionState((current) => (current ? { ...current, dirty: false } : current));
       return true;
@@ -1375,7 +1599,39 @@ export function BuzzProvider({ children }) {
             nextState = addCommunication(nextState, nextCommunication);
             nextState = withAudit(nextState, { what: 'Automation email queued', object: nextCommunication.title, old: '-', next: form.notifyEmail || DEFAULT_NOTIFY_EMAIL, actor: owner });
           }
+          nextState = applySubmissionAutomationRules({
+            form,
+            raw: raw || {},
+            score,
+            priority,
+            leadId,
+            leadName: nextLead.name,
+            owner,
+            state: nextState,
+          });
         }
+        return finalizeState(nextState);
+      });
+    };
+
+    const retryCommunication = (id) => {
+      setState((current) => {
+        const existing = current.communications.find((item) => item.id === id);
+        if (!existing) return current;
+        let nextState = {
+          ...current,
+          communications: current.communications.map((item) => (
+            item.id === id
+              ? {
+                  ...item,
+                  status: 'queued',
+                  scheduledFor: item.scheduledFor || new Date().toISOString(),
+                  detail: `${item.detail} Retry queued.`,
+                }
+              : item
+          )),
+        };
+        nextState = withAudit(nextState, { what: 'Communication retried', object: existing.title, old: existing.status, next: 'queued', actor: 'Alex' });
         return finalizeState(nextState);
       });
     };
@@ -1401,6 +1657,7 @@ export function BuzzProvider({ children }) {
       setInvoiceStatus,
       uploadFile,
       logCommunication,
+      retryCommunication,
       updateForm,
       setFormStatus,
       submitEntry,

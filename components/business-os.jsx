@@ -373,6 +373,14 @@ const COMMUNICATION_TEMPLATE_OPTIONS = [
   { value: 'internal-update', label: 'Internal Update' },
 ];
 
+const COMMUNICATION_TEMPLATES = {
+  blank: { subject: '', body: '' },
+  'follow-up': { subject: 'Quick follow-up', body: 'Hi,\n\nJust following up on the conversation and next step. Let me know what timing works best.\n\nBest,\nBuzzFlow' },
+  proposal: { subject: 'Proposal and next steps', body: 'Hi,\n\nHere is the proposal draft with scope, timing, and pricing. Reply with feedback and we can lock the next meeting.\n\nBest,\nBuzzFlow' },
+  'check-in': { subject: 'Checking in', body: 'Hi,\n\nWanted to check in and see where things stand on your side. Happy to help move this forward.\n\nBest,\nBuzzFlow' },
+  'internal-update': { subject: 'Internal update', body: 'Internal note:\n\nStatus update, blockers, owner handoff, and next action.' },
+};
+
 function recordPathFromTask(task) {
   if (task.related?.type === 'lead' && task.related.id) return `/leads/${task.related.id}`;
   if (task.related?.type === 'customer' && task.related.id) return `/customers/${task.related.id}`;
@@ -532,6 +540,16 @@ function hexToRgba(hex, alpha) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+function slugify(value = '') {
+  return String(value)
+    .toLowerCase()
+    .trim()
+    .replace(/https?:\/\//g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+}
+
 function defaultBuilderFields() {
   return [
     { id: 'section-contact', type: 'section', label: 'Contact Details', required: false, half: false },
@@ -621,6 +639,52 @@ function buildFormSteps(fields, multiStepEnabled) {
   });
   if (current.fields.length) sections.push(current);
   return sections.length ? sections : [{ id: 'step-all', label: 'All Fields', fields: fields.filter((field) => field.type !== 'section') }];
+}
+
+function entryValueForField(entry, field) {
+  if (!entry || !field) return '';
+  return entry.raw?.[field.label];
+}
+
+function buildFieldAnalytics(entries, fields) {
+  const liveFields = fields.filter((field) => !['section', 'hidden'].includes(field.type));
+  const total = entries.length || 1;
+  return liveFields.map((field) => {
+    const filled = entries.filter((entry) => {
+      const value = entryValueForField(entry, field);
+      if (Array.isArray(value)) return value.length > 0;
+      if (typeof value === 'boolean') return value;
+      return String(value || '').trim().length > 0;
+    }).length;
+    const fillRate = Math.round((filled / total) * 100);
+    return {
+      id: field.id,
+      label: field.label,
+      fillRate,
+      dropoff: Math.max(0, 100 - fillRate),
+      required: field.required,
+    };
+  });
+}
+
+function buildStepAnalytics(entries, steps) {
+  const total = entries.length || 1;
+  return steps.map((step) => {
+    const stepFields = (step.fields || []).filter((field) => !['section', 'hidden'].includes(field.type));
+    const completed = entries.filter((entry) => stepFields.every((field) => {
+      const value = entryValueForField(entry, field);
+      if (Array.isArray(value)) return value.length > 0;
+      if (typeof value === 'boolean') return value || !field.required;
+      return String(value || '').trim().length > 0 || !field.required;
+    })).length;
+    const completionRate = Math.round((completed / total) * 100);
+    return {
+      id: step.id,
+      label: step.label,
+      completionRate,
+      dropoff: Math.max(0, 100 - completionRate),
+    };
+  });
 }
 
 function topBarButton(active) {
@@ -1367,6 +1431,8 @@ export function CommunicationPage() {
     if (mode === 'internal') return item.internal;
     if (mode === 'external') return !item.internal;
     if (mode === 'queued') return item.status === 'queued';
+    if (mode === 'sent') return item.status === 'sent';
+    if (mode === 'failed') return item.status === 'failed';
     return true;
   });
   return (
@@ -1378,7 +1444,13 @@ export function CommunicationPage() {
             ['internal', 'Internal'],
             ['external', 'External'],
             ['queued', 'Queued'],
+            ['sent', 'Sent'],
+            ['failed', 'Failed'],
           ].map(([key, label]) => <Button key={key} size="sm" variant={mode === key ? 'primary' : 'default'} onClick={() => setMode(key)}>{label}</Button>)}
+        </Card>
+        <Card style={{ padding: 18 }}>
+          <Label style={{ marginBottom: 10 }}>Template Library</Label>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{COMMUNICATION_TEMPLATE_OPTIONS.filter((item) => item.value !== 'blank').map((item) => <Badge key={item.value} color="purple">{item.label}</Badge>)}</div>
         </Card>
         {rows.length ? <TableCard title="Communication Center" headers={[{ label: 'Message', w: '1fr' }, { label: 'Status', w: '90px' }, { label: 'Type', w: '110px' }, { label: 'Thread', w: '100px' }, { label: 'Linked To', w: '160px' }, { label: 'Owner', w: '90px' }]} rows={rows.map((item) => <ClickableRow key={item.id} href={`/communication/${item.id}`} columns={[{ w: '1fr', node: <PrimaryText title={item.title} sub={item.internal ? `Internal · ${item.detail}` : `${item.template} · ${item.detail}`} /> }, { w: '90px', node: <Badge color={item.status === 'sent' ? 'green' : item.status === 'failed' ? 'red' : item.status === 'queued' ? 'yellow' : 'gray'}>{item.status}</Badge> }, { w: '110px', node: <Badge color="cyan">{item.type}</Badge> }, { w: '100px', node: <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{item.threadId}</div> }, { w: '160px', node: <button type="button" onClick={(event) => { event.stopPropagation(); router.push(recordPathFromCommunication(item)); }} style={{ background: 'transparent', border: 'none', padding: 0, fontSize: 12, color: 'var(--text-2)', fontWeight: 700, textAlign: 'left' }}>{item.related?.label || item.linked}</button> }, { w: '90px', node: <Avatar name={item.owner} size={24} /> }]} />)} /> : <SmartEmptyState title="Connect SMTP to start email outreach" detail="Compose your first outbound message, save templates, and start building threads tied to leads and customers." actionLabel="Compose Message" actionHref="/communication/new" secondaryLabel="Open Customers" secondaryHref="/customers" />}
       </PageShell>
@@ -1524,9 +1596,15 @@ export function FormBuilderPage({ id }) {
   const [description, setDescription] = useState(savedForm?.description || '');
   const [submitLabel, setSubmitLabel] = useState(savedForm?.submitLabel || 'Submit');
   const [successMessage, setSuccessMessage] = useState(savedForm?.successMessage || 'Thanks. We received your submission and will follow up shortly.');
+  const [thankYouTitle, setThankYouTitle] = useState(savedForm?.thankYouTitle || 'Submission received');
+  const [thankYouBody, setThankYouBody] = useState(savedForm?.thankYouBody || 'Thanks. We received your submission and will review it shortly.');
+  const [redirectUrl, setRedirectUrl] = useState(savedForm?.redirectUrl || '');
+  const [publicDomain, setPublicDomain] = useState(savedForm?.publicDomain || '');
   const [notifyEmail, setNotifyEmail] = useState(savedForm?.notifyEmail || defaultNotificationEmail);
   const [ownerRotation, setOwnerRotation] = useState((savedForm?.owners || ['Alex', 'Sarah', 'Mika']).join(', '));
   const [automation, setAutomation] = useState(savedForm?.automation || {});
+  const [automationRules, setAutomationRules] = useState(savedForm?.automationRules || []);
+  const [integrations, setIntegrations] = useState(savedForm?.integrations || {});
   const [multiStepEnabled, setMultiStepEnabled] = useState(Boolean(savedForm?.multiStepEnabled));
   const [dragFieldId, setDragFieldId] = useState(null);
   const [autosaveState, setAutosaveState] = useState('Saved');
@@ -1539,16 +1617,23 @@ export function FormBuilderPage({ id }) {
   const selectedField = fields.find((field) => field.id === selectedFieldId) || null;
   const sectionLabel = fields.find((field) => field.type === 'section')?.label || 'Contact Details';
   const parsedOwners = useMemo(() => ownerRotation.split(',').map((item) => item.trim()).filter(Boolean), [ownerRotation]);
+  const publicSlug = useMemo(() => slugify(publicDomain || title || savedForm?.publicSlug || savedForm?.id), [publicDomain, title, savedForm?.id, savedForm?.publicSlug]);
   const builderDirty = title !== savedForm?.name
     || primaryColor !== savedColor
     || JSON.stringify(fields) !== JSON.stringify(normalizedSavedFields)
     || submitLabel !== (savedForm?.submitLabel || 'Submit')
     || successMessage !== (savedForm?.successMessage || 'Thanks. We received your submission and will follow up shortly.')
+    || thankYouTitle !== (savedForm?.thankYouTitle || 'Submission received')
+    || thankYouBody !== (savedForm?.thankYouBody || 'Thanks. We received your submission and will review it shortly.')
+    || redirectUrl !== (savedForm?.redirectUrl || '')
+    || publicDomain !== (savedForm?.publicDomain || '')
     || description !== (savedForm?.description || '')
     || notifyEmail !== (savedForm?.notifyEmail || defaultNotificationEmail)
     || ownerRotation !== (savedForm?.owners || ['Alex', 'Sarah', 'Mika']).join(', ')
     || multiStepEnabled !== Boolean(savedForm?.multiStepEnabled)
-    || JSON.stringify(automation || {}) !== JSON.stringify(savedForm?.automation || {});
+    || JSON.stringify(automation || {}) !== JSON.stringify(savedForm?.automation || {})
+    || JSON.stringify(automationRules || []) !== JSON.stringify(savedForm?.automationRules || [])
+    || JSON.stringify(integrations || {}) !== JSON.stringify(savedForm?.integrations || {});
 
   useEffect(() => {
     setTitle(savedForm?.name || 'Contact Inquiry');
@@ -1558,9 +1643,15 @@ export function FormBuilderPage({ id }) {
     setDescription(savedForm?.description || '');
     setSubmitLabel(savedForm?.submitLabel || 'Submit');
     setSuccessMessage(savedForm?.successMessage || 'Thanks. We received your submission and will follow up shortly.');
+    setThankYouTitle(savedForm?.thankYouTitle || 'Submission received');
+    setThankYouBody(savedForm?.thankYouBody || 'Thanks. We received your submission and will review it shortly.');
+    setRedirectUrl(savedForm?.redirectUrl || '');
+    setPublicDomain(savedForm?.publicDomain || '');
     setNotifyEmail(savedForm?.notifyEmail || defaultNotificationEmail);
     setOwnerRotation((savedForm?.owners || ['Alex', 'Sarah', 'Mika']).join(', '));
     setAutomation(savedForm?.automation || {});
+    setAutomationRules(savedForm?.automationRules || []);
+    setIntegrations(savedForm?.integrations || {});
     setMultiStepEnabled(Boolean(savedForm?.multiStepEnabled));
     setAutosaveState('Saved');
     autosaveInitializedRef.current = false;
@@ -1579,13 +1670,20 @@ export function FormBuilderPage({ id }) {
       description,
       submitLabel,
       successMessage,
+      thankYouTitle,
+      thankYouBody,
+      redirectUrl,
+      publicDomain,
+      publicSlug,
       notifyEmail,
       owners: parsedOwners,
       defaultOwner: parsedOwners[0] || 'Alex',
       automation,
+      automationRules,
+      integrations,
       multiStepEnabled,
     });
-  }, [automation, builderDirty, description, fields, multiStepEnabled, notifyEmail, parsedOwners, primaryColor, published, savedForm, setBuilderSession, submitLabel, successMessage, title]);
+  }, [automation, automationRules, builderDirty, description, fields, integrations, multiStepEnabled, notifyEmail, parsedOwners, primaryColor, publicDomain, published, redirectUrl, savedForm, setBuilderSession, submitLabel, successMessage, thankYouBody, thankYouTitle, title]);
 
   useEffect(() => {
     if (!savedForm?.id) return;
@@ -1608,11 +1706,18 @@ export function FormBuilderPage({ id }) {
         automation,
         submitLabel,
         successMessage,
+        thankYouTitle,
+        thankYouBody,
+        redirectUrl,
+        publicDomain,
+        publicSlug,
         description,
         notifyEmail,
         owners: parsedOwners,
         defaultOwner: parsedOwners[0] || 'Alex',
         multiStepEnabled,
+        automationRules,
+        integrations,
       });
       if (savedForm.status && !['active', 'draft'].includes(savedForm.status)) {
         setFormStatus(savedForm.id, savedForm.status);
@@ -1620,7 +1725,7 @@ export function FormBuilderPage({ id }) {
       setAutosaveState('Saved');
     }, 900);
     return () => window.clearTimeout(timer);
-  }, [automation, builderDirty, description, fields, multiStepEnabled, notifyEmail, parsedOwners, primaryColor, published, savedForm?.id, savedForm?.status, submitLabel, successMessage, title, updateForm, setFormStatus]);
+  }, [automation, automationRules, builderDirty, description, fields, integrations, multiStepEnabled, notifyEmail, parsedOwners, primaryColor, publicDomain, published, redirectUrl, savedForm?.id, savedForm?.status, submitLabel, successMessage, thankYouBody, thankYouTitle, title, updateForm, setFormStatus]);
 
   const rememberState = (nextFields, nextTitle = title, nextColor = primaryColor, nextSelectedId = selectedFieldId) => {
     setHistory((current) => [...current.slice(-29), { title, fields, primaryColor, selectedFieldId }]);
@@ -1632,7 +1737,7 @@ export function FormBuilderPage({ id }) {
 
   const saveDraft = () => {
     if (!savedForm?.id) return;
-    updateForm({ id: savedForm.id, title, fields, published, color: primaryColor, automation, submitLabel, successMessage, description, notifyEmail, owners: parsedOwners, defaultOwner: parsedOwners[0] || 'Alex', multiStepEnabled });
+    updateForm({ id: savedForm.id, title, fields, published, color: primaryColor, automation, submitLabel, successMessage, thankYouTitle, thankYouBody, redirectUrl, publicDomain, publicSlug, description, notifyEmail, owners: parsedOwners, defaultOwner: parsedOwners[0] || 'Alex', multiStepEnabled, automationRules, integrations });
     if (savedForm.status && !['active', 'draft'].includes(savedForm.status)) {
       setFormStatus(savedForm.id, savedForm.status);
     }
@@ -1642,10 +1747,10 @@ export function FormBuilderPage({ id }) {
   const changeStatus = (status) => {
     if (!savedForm?.id) return;
     if (status === 'active') {
-      updateForm({ id: savedForm.id, title, fields, published: true, color: primaryColor, automation, submitLabel, successMessage, description, notifyEmail, owners: parsedOwners, defaultOwner: parsedOwners[0] || 'Alex', multiStepEnabled });
+      updateForm({ id: savedForm.id, title, fields, published: true, color: primaryColor, automation, submitLabel, successMessage, thankYouTitle, thankYouBody, redirectUrl, publicDomain, publicSlug, description, notifyEmail, owners: parsedOwners, defaultOwner: parsedOwners[0] || 'Alex', multiStepEnabled, automationRules, integrations });
       flash('Form published.');
     } else {
-      updateForm({ id: savedForm.id, title, fields, published: false, color: primaryColor, automation, submitLabel, successMessage, description, notifyEmail, owners: parsedOwners, defaultOwner: parsedOwners[0] || 'Alex', multiStepEnabled });
+      updateForm({ id: savedForm.id, title, fields, published: false, color: primaryColor, automation, submitLabel, successMessage, thankYouTitle, thankYouBody, redirectUrl, publicDomain, publicSlug, description, notifyEmail, owners: parsedOwners, defaultOwner: parsedOwners[0] || 'Alex', multiStepEnabled, automationRules, integrations });
       setFormStatus(savedForm.id, status);
       flash(status === 'paused' ? 'Form paused.' : status === 'archived' ? 'Form archived.' : 'Form unpublished.');
     }
@@ -1835,6 +1940,25 @@ export function FormBuilderPage({ id }) {
                 <Label style={{ marginBottom: 6 }}>Success state</Label>
                 <textarea value={successMessage} onChange={(event) => setSuccessMessage(event.target.value)} style={{ width: '100%', minHeight: 72, padding: '10px 12px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 9, color: 'var(--text)', fontSize: 12, outline: 'none', resize: 'vertical', lineHeight: 1.6 }} />
               </div>
+              <div>
+                <Label style={{ marginBottom: 6 }}>Thank-you title</Label>
+                <input value={thankYouTitle} onChange={(event) => setThankYouTitle(event.target.value)} style={{ width: '100%', padding: '10px 12px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 9, color: 'var(--text)', fontSize: 12, outline: 'none' }} />
+              </div>
+              <div>
+                <Label style={{ marginBottom: 6 }}>Thank-you body</Label>
+                <textarea value={thankYouBody} onChange={(event) => setThankYouBody(event.target.value)} style={{ width: '100%', minHeight: 72, padding: '10px 12px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 9, color: 'var(--text)', fontSize: 12, outline: 'none', resize: 'vertical', lineHeight: 1.6 }} />
+              </div>
+              <div>
+                <Label style={{ marginBottom: 6 }}>Redirect URL</Label>
+                <input value={redirectUrl} onChange={(event) => setRedirectUrl(event.target.value)} placeholder="https://example.com/thanks" style={{ width: '100%', padding: '10px 12px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 9, color: 'var(--text)', fontSize: 12, outline: 'none' }} />
+              </div>
+              <div>
+                <Label style={{ marginBottom: 6 }}>Custom domain</Label>
+                <input value={publicDomain} onChange={(event) => setPublicDomain(event.target.value)} placeholder="forms.yourbrand.com" style={{ width: '100%', padding: '10px 12px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 9, color: 'var(--text)', fontSize: 12, outline: 'none' }} />
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-3)', lineHeight: 1.7 }}>
+                Public slug: <span style={{ fontWeight: 700, color: 'var(--text)' }}>{publicSlug || savedForm?.id}</span>
+              </div>
             </Card>
             <Label>Flow</Label>
             <Card style={{ padding: 14, display: 'grid', gap: 10 }}>
@@ -1921,10 +2045,49 @@ export function FormBuilderPage({ id }) {
                 <input value={ownerRotation} onChange={(event) => setOwnerRotation(event.target.value)} style={{ width: '100%', padding: '10px 12px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 9, color: 'var(--text)', fontSize: 12, outline: 'none' }} />
               </div>
             </Card>
+            <Label>Rule Builder</Label>
+            <Card style={{ padding: 14, display: 'grid', gap: 10 }}>
+              {automationRules.map((rule, index) => (
+                <div key={rule.id || index} style={{ padding: 12, borderRadius: 12, border: `1px solid ${UI.border}`, background: UI.panel }}>
+                  <div style={{ display: 'grid', gap: 10 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                      <SelectField label="Field" value={rule.field} onChange={(event) => setAutomationRules((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, field: event.target.value } : item))} options={[{ value: 'budget', label: 'Budget' }, { value: 'score', label: 'Score' }, { value: 'urgency', label: 'Urgency' }, { value: 'phonePresent', label: 'Phone Present' }]} />
+                      <SelectField label="Operator" value={rule.operator} onChange={(event) => setAutomationRules((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, operator: event.target.value } : item))} options={[{ value: 'gte', label: 'Greater than or equal' }, { value: 'contains', label: 'Contains' }, { value: 'equals', label: 'Equals' }, { value: 'exists', label: 'Exists' }]} />
+                    </div>
+                    <Field label="Value" value={rule.value || ''} onChange={(event) => setAutomationRules((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))} placeholder="50000" />
+                    <SelectField label="Action" value={rule.action} onChange={(event) => setAutomationRules((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, action: event.target.value } : item))} options={[{ value: 'createUrgentTask', label: 'Create urgent task' }, { value: 'queueEmail', label: 'Queue email' }, { value: 'tagLeadHot', label: 'Tag lead hot' }]} />
+                    <div style={{ fontSize: 12, color: 'var(--text-3)', lineHeight: 1.6 }}>
+                      If <strong>{rule.field}</strong> {rule.operator} <strong>{rule.value || '...'}</strong> then <strong>{rule.action}</strong>.
+                    </div>
+                    <button type="button" onClick={() => setAutomationRules((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={{ height: 38, padding: '0 10px', borderRadius: 9, border: '1px solid rgba(239,68,68,0.2)', background: 'rgba(239,68,68,0.08)', color: '#DC2626', fontSize: 12, fontWeight: 700 }}>Remove Rule</button>
+                  </div>
+                </div>
+              ))}
+              <Button size="sm" onClick={() => setAutomationRules((current) => [...current, { id: `rule-${Date.now()}`, field: 'budget', operator: 'gte', value: '50000', action: 'createUrgentTask', enabled: true }])}><Icon d={ICONS.plus} size={12} />Add Rule</Button>
+            </Card>
+            <Label>Outbound Integrations</Label>
+            <Card style={{ padding: 14, display: 'grid', gap: 10 }}>
+              <ToggleField label="Slack webhook" checked={Boolean(integrations?.slackEnabled)} onChange={() => setIntegrations((current) => ({ ...current, slackEnabled: !current?.slackEnabled }))} hint="Queue Slack payloads when entries are submitted." />
+              <Field label="Slack webhook URL" value={integrations?.slackWebhook || ''} onChange={(event) => setIntegrations((current) => ({ ...current, slackWebhook: event.target.value }))} placeholder="https://hooks.slack.com/..." />
+              <ToggleField label="CRM webhook" checked={Boolean(integrations?.crmEnabled)} onChange={() => setIntegrations((current) => ({ ...current, crmEnabled: !current?.crmEnabled }))} hint="Queue CRM sync events from new leads." />
+              <Field label="CRM endpoint" value={integrations?.crmWebhook || ''} onChange={(event) => setIntegrations((current) => ({ ...current, crmWebhook: event.target.value }))} placeholder="https://crm.example.com/webhook" />
+              <ToggleField label="Supabase table sync" checked={Boolean(integrations?.supabaseEnabled)} onChange={() => setIntegrations((current) => ({ ...current, supabaseEnabled: !current?.supabaseEnabled }))} hint="Queue row sync events to Supabase." />
+              <Field label="Supabase table" value={integrations?.supabaseTable || ''} onChange={(event) => setIntegrations((current) => ({ ...current, supabaseTable: event.target.value }))} placeholder="public.form_entries_live" />
+            </Card>
             <Label>SMTP</Label>
             <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>Internal alerts are prepared for SMTP delivery from `ahmadlarin14@gmail.com`. Add the app password later in `.env.local` to activate live sending.</div></Card>
           </>}
           {tab === 'embed' && <>
+            <Label>Public Form</Label>
+            <Card style={{ padding: 14, display: 'grid', gap: 10 }}>
+              <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>Public route: <span style={{ fontWeight: 700 }}>/f/{publicSlug || savedForm?.id}</span></div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>Custom domain: <span style={{ fontWeight: 700 }}>{publicDomain || 'Not configured'}</span></div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>Redirect after submit: <span style={{ fontWeight: 700 }}>{redirectUrl || 'Stay on thank-you page'}</span></div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <Button size="sm" href={`/f/${publicSlug || savedForm?.id}`}><Icon d={ICONS.eye} size={12} />Open Public Form</Button>
+                <Button size="sm" onClick={() => { if (!published) { flash('Publish the form before copying the public link.'); return; } try { navigator.clipboard.writeText(`${window.location.origin}/f/${publicSlug || savedForm?.id}`); } catch (error) {} flash('Public form link copied.'); }}><Icon d={ICONS.copy} size={12} />Copy Public Link</Button>
+              </div>
+            </Card>
             <Label>Embed Script</Label>
             <pre style={{ padding: 12, background: '#f6f2ff', border: `1px solid ${UI.border}`, borderRadius: 9, fontSize: 10, color: '#7C3AED', fontFamily: '"JetBrains Mono", monospace', lineHeight: 1.8, overflow: 'auto', margin: 0 }}>{`<script
   src="https://cdn.buzzflow.io/widget.js"
@@ -1992,11 +2155,25 @@ export function FormDetailPage({ id }) {
   const { communications, entries, forms, leads, logs, setFormStatus, updateForm } = useBuzzStore();
   const form = forms.find((item) => item.id === id);
   const [toast, flash] = useFlashMessage();
+  const [editingAutomation, setEditingAutomation] = useState(false);
+  const [automationDraft, setAutomationDraft] = useState(form?.automation || {});
+  const [notifyEmailDraft, setNotifyEmailDraft] = useState(form?.notifyEmail || '');
+  const [ownerDraft, setOwnerDraft] = useState((form?.owners || []).join(', '));
+  useEffect(() => {
+    if (form) {
+      setAutomationDraft(form.automation || {});
+      setNotifyEmailDraft(form.notifyEmail || '');
+      setOwnerDraft((form.owners || []).join(', '));
+    }
+  }, [form]);
   if (!form) {
     return <PageShell title="Form not found" subtitle="This form is missing from the current local workspace."><EmptyState title="No form record available" detail="The URL is valid only if the record exists in the current browser workspace." /></PageShell>;
   }
   const relatedEntries = entries.filter((entry) => entry.formId === form.id);
   const relatedAutomation = communications.filter((item) => item.title?.includes(form.name) || item.detail?.includes(form.notifyEmail || ''));
+  const normalizedFields = normalizeBuilderFields(form.field_schema);
+  const stepAnalytics = buildStepAnalytics(relatedEntries, buildFormSteps(normalizedFields, Boolean(form.multiStepEnabled)));
+  const fieldAnalytics = buildFieldAnalytics(relatedEntries, normalizedFields).sort((a, b) => b.dropoff - a.dropoff);
   const timelineItems = buildTimelineEntries({
     logs,
     communications,
@@ -2013,10 +2190,10 @@ export function FormDetailPage({ id }) {
         eyebrow="Form Overview"
         title={form.name}
         subtitle={`${form.code} · ${form.status} · ${form.fields} fields · ${form.rules} rules`}
-        actions={<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><Button href={`/forms/builder/${form.id}`} variant="primary"><Icon d={ICONS.edit} size={14} />Open Builder</Button><Button href={`/forms/${form.id}/preview`}><Icon d={ICONS.eye} size={14} />Public Preview</Button><Button onClick={() => { if (form.status !== 'active') { flash('Publish the form before copying the live embed script.'); return; } try { navigator.clipboard.writeText(`<script src="https://cdn.buzzflow.io/widget.js" data-form="${form.code}" async></script>`); } catch (error) {} flash('Live embed script copied.'); }}><Icon d={ICONS.copy} size={14} />Copy Embed Script</Button>{form.status !== 'active' ? <Button onClick={() => { updateForm({ id: form.id, title: form.name, fields: form.field_schema || [], published: true }); flash('Form published.'); }}><Icon d={ICONS.zap} size={14} />Publish</Button> : null}{form.status === 'active' ? <Button onClick={() => { setFormStatus(form.id, 'paused'); flash('Form paused.'); }}>Pause</Button> : null}{form.status !== 'draft' ? <Button variant="danger" onClick={() => { setFormStatus(form.id, 'draft'); flash('Form unpublished.'); }}>Unpublish</Button> : null}</div>}
+        actions={<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><Button href={`/forms/builder/${form.id}`} variant="primary"><Icon d={ICONS.edit} size={14} />Open Builder</Button><Button href={`/f/${form.publicSlug || form.id}`}><Icon d={ICONS.eye} size={14} />Open Public Form</Button><Button onClick={() => { if (form.status !== 'active') { flash('Publish the form before copying the public link.'); return; } try { navigator.clipboard.writeText(`${window.location.origin}/f/${form.publicSlug || form.id}`); } catch (error) {} flash('Public form link copied.'); }}><Icon d={ICONS.copy} size={14} />Copy Public Link</Button><Button onClick={() => { if (form.status !== 'active') { flash('Publish the form before copying the live embed script.'); return; } try { navigator.clipboard.writeText(`<script src="https://cdn.buzzflow.io/widget.js" data-form="${form.code}" async></script>`); } catch (error) {} flash('Live embed script copied.'); }}><Icon d={ICONS.code} size={14} />Copy Embed Script</Button>{form.status !== 'active' ? <Button onClick={() => { updateForm({ id: form.id, title: form.name, fields: form.field_schema || [], published: true, automation: form.automation, notifyEmail: form.notifyEmail, owners: form.owners, defaultOwner: form.defaultOwner, multiStepEnabled: form.multiStepEnabled, description: form.description, submitLabel: form.submitLabel, successMessage: form.successMessage, thankYouTitle: form.thankYouTitle, thankYouBody: form.thankYouBody, redirectUrl: form.redirectUrl, publicDomain: form.publicDomain, publicSlug: form.publicSlug, automationRules: form.automationRules, integrations: form.integrations, color: form.color }); flash('Form published.'); }}><Icon d={ICONS.zap} size={14} />Publish</Button> : null}{form.status === 'active' ? <Button onClick={() => { setFormStatus(form.id, 'paused'); flash('Form paused.'); }}>Pause</Button> : null}{form.status !== 'draft' ? <Button variant="danger" onClick={() => { setFormStatus(form.id, 'draft'); flash('Form unpublished.'); }}>Unpublish</Button> : null}</div>}
         side={{
-          main: <><StatBand items={[{ label: 'Submissions', value: String(form.submissions), note: 'live', color: 'purple' }, { label: 'Conversion', value: `${form.conversion}%`, note: 'entry to lead', color: 'cyan' }, { label: 'Rules', value: String(form.rules), note: 'active', color: 'green' }]} /><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Automation Pipeline</Label><div style={{ display: 'grid', gap: 8 }}><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Auto-create lead: {form.automation?.autoCreateLead ? 'On' : 'Off'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Auto-assign owner: {form.automation?.autoAssignOwner ? 'On' : 'Off'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Follow-up task: {form.automation?.createFollowUpTask ? 'On' : 'Off'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>SMTP target: {form.notifyEmail || 'Not set'}</div></div></Card>{relatedEntries.length ? <TableCard title="Latest Entries" headers={[{ label: 'Contact', w: '1fr' }, { label: 'State', w: '110px' }, { label: 'Result', w: '140px' }, { label: 'Lead', w: '120px' }]} rows={relatedEntries.map((entry) => { const linkedLead = leads.find((lead) => lead.entryId === entry.id); return <ClickableRow key={entry.id} href={`/entries/${entry.id}`} columns={[{ w: '1fr', node: <PrimaryText title={entry.contact} sub={`${entry.email} · ${entry.submitted}`} /> }, { w: '110px', node: <Badge color={badgeColor(entry.state)}>{entry.state}</Badge> }, { w: '140px', node: <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{entry.result}</div> }, { w: '120px', node: linkedLead ? <div onClick={(event) => event.stopPropagation()}><Button href={`/leads/${linkedLead.id}`} size="sm">Open Lead</Button></div> : <span style={{ fontSize: 12, color: 'var(--text-3)' }}>No lead</span> }]} />; })} /> : <SmartEmptyState title="Publish a form to start collecting leads" detail="A live form starts the full chain: submission, lead qualification, communication, tasks, and activity." actionLabel="Open Builder" actionHref={`/forms/builder/${form.id}`} secondaryLabel="Public Preview" secondaryHref={`/forms/${form.id}/preview`} /> }<TimelineList items={timelineItems} emptyTitle="No form timeline yet" emptyDetail="Publish or edit this form to start building a visible operational history." actionLabel="Open Builder" actionHref={`/forms/builder/${form.id}`} /></>,
-          aside: <><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Publishing</Label><div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}><Badge color={badgeColor(form.status)}>{form.status}</Badge><div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>Internal endpoint: {form.endpoint}</div></div></Card><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Embed</Label><pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: 10, color: '#7C3AED', fontFamily: '"JetBrains Mono", monospace', lineHeight: 1.8 }}>{`<script src="https://cdn.buzzflow.io/widget.js" data-form="${form.code}" async></script>`}</pre></Card><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Automation Activity</Label>{relatedAutomation.length ? relatedAutomation.slice(0, 3).map((item) => <div key={item.id} style={{ padding: '10px 0', borderBottom: `1px solid ${UI.border}` }}><div style={{ fontSize: 12, fontWeight: 700 }}>{item.title}</div><div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{item.detail}</div></div>) : <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No automation mail or follow-up events logged yet.</div>}</Card></>,
+          main: <><StatBand items={[{ label: 'Submissions', value: String(form.submissions), note: 'live', color: 'purple' }, { label: 'Conversion', value: `${form.conversion}%`, note: 'entry to lead', color: 'cyan' }, { label: 'Rules', value: String((form.automationRules || []).filter((rule) => rule.enabled).length || form.rules), note: 'active', color: 'green' }]} /><InlineEditor editing={editingAutomation} onEditToggle={() => setEditingAutomation((current) => !current)} onSave={() => { const parsedOwners = ownerDraft.split(',').map((item) => item.trim()).filter(Boolean); updateForm({ id: form.id, title: form.name, fields: form.field_schema || [], published: form.status === 'active', automation: automationDraft, notifyEmail: notifyEmailDraft, owners: parsedOwners, defaultOwner: parsedOwners[0] || form.defaultOwner || 'Alex', multiStepEnabled: form.multiStepEnabled, description: form.description, submitLabel: form.submitLabel, successMessage: form.successMessage, thankYouTitle: form.thankYouTitle, thankYouBody: form.thankYouBody, redirectUrl: form.redirectUrl, publicDomain: form.publicDomain, automationRules: form.automationRules, integrations: form.integrations, color: form.color }); setEditingAutomation(false); flash('Automation settings updated.'); }}><Label style={{ marginBottom: 10 }}>Automation Pipeline</Label>{editingAutomation ? <div style={{ display: 'grid', gap: 10 }}><ToggleField label="Auto-create lead" checked={Boolean(automationDraft?.autoCreateLead)} onChange={() => setAutomationDraft((current) => ({ ...current, autoCreateLead: !current?.autoCreateLead }))} /><ToggleField label="Auto-assign owner" checked={Boolean(automationDraft?.autoAssignOwner)} onChange={() => setAutomationDraft((current) => ({ ...current, autoAssignOwner: !current?.autoAssignOwner }))} /><ToggleField label="Create follow-up task" checked={Boolean(automationDraft?.createFollowUpTask)} onChange={() => setAutomationDraft((current) => ({ ...current, createFollowUpTask: !current?.createFollowUpTask }))} /><ToggleField label="Queue SMTP email" checked={Boolean(automationDraft?.sendInternalEmail)} onChange={() => setAutomationDraft((current) => ({ ...current, sendInternalEmail: !current?.sendInternalEmail }))} /><Field label="Notification email" value={notifyEmailDraft} onChange={(event) => setNotifyEmailDraft(event.target.value)} /><Field label="Owner rotation" value={ownerDraft} onChange={(event) => setOwnerDraft(event.target.value)} placeholder="Alex, Sarah, Mika" /></div> : <div style={{ display: 'grid', gap: 8 }}><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Auto-create lead: {form.automation?.autoCreateLead ? 'On' : 'Off'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Auto-assign owner: {form.automation?.autoAssignOwner ? 'On' : 'Off'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Follow-up task: {form.automation?.createFollowUpTask ? 'On' : 'Off'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>SMTP target: {form.notifyEmail || 'Not set'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Owner rotation: {(form.owners || []).join(', ') || 'Not set'}</div></div>}</InlineEditor><TableCard title="Step Analytics" headers={[{ label: 'Step', w: '1fr' }, { label: 'Completion', w: '120px' }, { label: 'Drop-off', w: '120px' }]} rows={stepAnalytics.map((step) => <Row key={step.id} columns={[{ w: '1fr', node: <PrimaryText title={step.label} sub="step completion across submissions" /> }, { w: '120px', node: <Badge color={step.completionRate >= 70 ? 'green' : step.completionRate >= 40 ? 'yellow' : 'red'}>{step.completionRate}%</Badge> }, { w: '120px', node: <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{step.dropoff}%</div> }]} />)} /><TableCard title="Field Drop-off" headers={[{ label: 'Field', w: '1fr' }, { label: 'Fill Rate', w: '110px' }, { label: 'Drop-off', w: '110px' }]} rows={fieldAnalytics.slice(0, 6).map((field) => <Row key={field.id} columns={[{ w: '1fr', node: <PrimaryText title={field.label} sub={field.required ? 'required' : 'optional'} /> }, { w: '110px', node: <Badge color={field.fillRate >= 70 ? 'green' : field.fillRate >= 40 ? 'yellow' : 'red'}>{field.fillRate}%</Badge> }, { w: '110px', node: <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{field.dropoff}%</div> }]} />)} />{relatedEntries.length ? <TableCard title="Latest Entries" headers={[{ label: 'Contact', w: '1fr' }, { label: 'State', w: '110px' }, { label: 'Result', w: '140px' }, { label: 'Lead', w: '120px' }]} rows={relatedEntries.map((entry) => { const linkedLead = leads.find((lead) => lead.entryId === entry.id); return <ClickableRow key={entry.id} href={`/entries/${entry.id}`} columns={[{ w: '1fr', node: <PrimaryText title={entry.contact} sub={`${entry.email} · ${entry.submitted}`} /> }, { w: '110px', node: <Badge color={badgeColor(entry.state)}>{entry.state}</Badge> }, { w: '140px', node: <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{entry.result}</div> }, { w: '120px', node: linkedLead ? <div onClick={(event) => event.stopPropagation()}><Button href={`/leads/${linkedLead.id}`} size="sm">Open Lead</Button></div> : <span style={{ fontSize: 12, color: 'var(--text-3)' }}>No lead</span> }]} />; })} /> : <SmartEmptyState title="Publish a form to start collecting leads" detail="A live form starts the full chain: submission, lead qualification, communication, tasks, and activity." actionLabel="Open Builder" actionHref={`/forms/builder/${form.id}`} secondaryLabel="Open Public Form" secondaryHref={`/f/${form.id}`} /> }<TimelineList items={timelineItems} emptyTitle="No form timeline yet" emptyDetail="Publish or edit this form to start building a visible operational history." actionLabel="Open Builder" actionHref={`/forms/builder/${form.id}`} /></>,
+          aside: <><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Publishing</Label><div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}><Badge color={badgeColor(form.status)}>{form.status}</Badge><div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>Public route: /f/{form.publicSlug || form.id}</div><div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>Custom domain: {form.publicDomain || 'Not configured'}</div><div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>Redirect: {form.redirectUrl || 'Stay on thank-you page'}</div><div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>Internal endpoint: {form.endpoint}</div></div></Card><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Thank-you</Label><div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{form.thankYouTitle || 'Submission received'}</div><div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6, lineHeight: 1.7 }}>{form.thankYouBody || 'Thanks. We received your submission and will review it shortly.'}</div></Card><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Embed</Label><pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: 10, color: '#7C3AED', fontFamily: '"JetBrains Mono", monospace', lineHeight: 1.8 }}>{`<script src="https://cdn.buzzflow.io/widget.js" data-form="${form.code}" async></script>`}</pre></Card><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Integrations</Label><div style={{ display: 'grid', gap: 8 }}><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Slack: {form.integrations?.slackEnabled ? 'Queued' : 'Off'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>CRM: {form.integrations?.crmEnabled ? 'Queued' : 'Off'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Supabase: {form.integrations?.supabaseEnabled ? (form.integrations?.supabaseTable || 'Configured') : 'Off'}</div></div></Card><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Automation Activity</Label>{relatedAutomation.length ? relatedAutomation.slice(0, 4).map((item) => <div key={item.id} style={{ padding: '10px 0', borderBottom: `1px solid ${UI.border}` }}><div style={{ fontSize: 12, fontWeight: 700 }}>{item.title}</div><div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{item.detail}</div></div>) : <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No automation mail or follow-up events logged yet.</div>}</Card></>,
         }}
       />
       <Toast message={toast} />
@@ -2181,7 +2358,7 @@ export function CustomerDetailPage({ id }) {
 
 export function PublicEmbedPage({ id, mode = 'live' }) {
   const { forms, submitEntry } = useBuzzStore();
-  const form = forms.find((item) => item.id === id);
+  const form = forms.find((item) => item.id === id || item.publicSlug === id);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState('');
   const [mailMessage, setMailMessage] = useState('');
@@ -2201,6 +2378,15 @@ export function PublicEmbedPage({ id, mode = 'live' }) {
     setError('');
     setCurrentStep(0);
   }, [fields, form?.id]);
+  useEffect(() => {
+    if (!submitted || mode === 'draft') return undefined;
+    const target = form?.redirectUrl || `/thanks/${form?.publicSlug || form?.id}`;
+    if (!target) return undefined;
+    const timer = window.setTimeout(() => {
+      window.location.assign(target);
+    }, 1600);
+    return () => window.clearTimeout(timer);
+  }, [form?.id, form?.publicSlug, form?.redirectUrl, mode, submitted]);
   if (!form) {
     return <div className="buzz-scroll buzz-fadein" style={{ flex: 1, padding: '48px 20px' }}><div style={{ maxWidth: 640, margin: '0 auto' }}><EmptyState title="Form unavailable" detail="This form is not available in the current browser workspace." /></div></div>;
   }
@@ -2228,6 +2414,7 @@ export function PublicEmbedPage({ id, mode = 'live' }) {
           </div>
           <h1 style={{ fontSize: 21, fontWeight: 800, letterSpacing: '-0.03em', margin: 0 }}>{form.name}</h1>
           <p style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 6, marginBottom: 26 }}>{form.description || (isDraftPreview ? 'Draft preview. This route never creates a live submission.' : 'Public embedded form preview. Published status, validation shell, and submission endpoint are controlled internally.')}</p>
+          {form.publicDomain ? <div style={{ marginTop: -14, marginBottom: 18, fontSize: 12, color: 'var(--text-3)' }}>Custom domain: {form.publicDomain}</div> : null}
           {form.multiStepEnabled ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
               {steps.map((step, index) => (
@@ -2359,8 +2546,30 @@ export function PublicEmbedPage({ id, mode = 'live' }) {
             </div>
           ) : null}
           {error ? <div style={{ marginTop: 14, fontSize: 12, color: '#EF4444', fontWeight: 700 }}>{error}</div> : null}
-          {submitted ? <div style={{ marginTop: 14, fontSize: 12, color: '#10B981', fontWeight: 700 }}>{isDraftPreview ? 'Draft preview submitted successfully. No production entry was created.' : (form.successMessage || 'Entry submitted successfully. Qualification, task creation, and activity logging would run next.')}</div> : null}
+          {submitted ? <div style={{ marginTop: 14, fontSize: 12, color: '#10B981', fontWeight: 700 }}>{isDraftPreview ? 'Draft preview submitted successfully. No production entry was created.' : (form.thankYouTitle || form.successMessage || 'Submission received')}</div> : null}
+          {submitted && !isDraftPreview ? <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-3)', lineHeight: 1.7 }}>{form.thankYouBody || 'Thanks. We received your submission and will review it shortly.'} Redirecting to {form.redirectUrl || `/thanks/${form.publicSlug || form.id}`}...</div> : null}
           {mailMessage ? <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-3)', fontWeight: 600 }}>{mailMessage}</div> : null}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+export function ThankYouPage({ slug }) {
+  const { forms } = useBuzzStore();
+  const form = forms.find((item) => item.publicSlug === slug || item.id === slug);
+  return (
+    <div className="buzz-scroll buzz-fadein" style={{ flex: 1, padding: '48px 20px' }}>
+      <div style={{ maxWidth: 640, margin: '0 auto' }}>
+        <Card style={{ padding: 32, borderRadius: 22, boxShadow: UI.shadow }}>
+          <Badge color="green">Submission received</Badge>
+          <h1 style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-0.03em', marginTop: 18, marginBottom: 10 }}>{form?.thankYouTitle || 'Thanks, you are all set.'}</h1>
+          <div style={{ fontSize: 14, color: 'var(--text-2)', lineHeight: 1.8 }}>{form?.thankYouBody || 'Your submission is in the queue. We will review it and follow up shortly.'}</div>
+          <div style={{ marginTop: 18, fontSize: 12, color: 'var(--text-3)' }}>Reference: {form?.name || slug}</div>
+          <div style={{ marginTop: 18, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <Button href={`/f/${form?.publicSlug || form?.id || slug}`}><Icon d={ICONS.eye} size={12} />Open Form Again</Button>
+            <Button href="/dashboard" variant="primary"><Icon d={ICONS.arrowLeft} size={12} />Back to BuzzFlow</Button>
+          </div>
         </Card>
       </div>
     </div>
@@ -2629,6 +2838,19 @@ export function NewCommunicationPage() {
     form: forms.map((item) => ({ value: item.id, label: `${item.name} · ${item.code}` })),
   };
   const relatedOptions = relatedCollections[relatedType] || [];
+  useEffect(() => {
+    if (!template || template === 'blank') return;
+    const preset = COMMUNICATION_TEMPLATES[template];
+    if (!preset) return;
+    setTitle((current) => current || preset.subject);
+    setBody((current) => current || preset.body);
+    if (template === 'internal-update') {
+      setInternal(true);
+      setType('note');
+    } else {
+      setType('email');
+    }
+  }, [template]);
   return (
     <PageShell title="New Communication" subtitle="Compose a message, internal note, or scheduled send">
       <Card style={{ padding: 18, display: 'grid', gap: 12 }}>
@@ -2646,6 +2868,7 @@ export function NewCommunicationPage() {
           <SelectField label="Linked Record" value={relatedId} onChange={(event) => setRelatedId(event.target.value)} options={[{ value: '', label: `Select ${relatedType}` }, ...relatedOptions]} />
         </div>
         <ToggleField label="Internal Note" checked={internal} onChange={(event) => setInternal(event.target.checked)} hint="Use internal for notes/comments and external for customer-facing messages." />
+        {template !== 'blank' ? <Card style={{ padding: 14, background: UI.panelSoft }}><Label style={{ marginBottom: 8 }}>Template Preview</Label><div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{COMMUNICATION_TEMPLATES[template]?.subject}</div><div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 8, lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{COMMUNICATION_TEMPLATES[template]?.body}</div></Card> : null}
         <Field label="Attachments" value={attachments} onChange={(event) => setAttachments(event.target.value)} placeholder="proposal.pdf, brief.docx" />
         <TextAreaField label="Message Body" value={body} onChange={(event) => setBody(event.target.value)} placeholder="Write the message, thread context, or internal note here." rows={6} />
       </Card>
@@ -2673,24 +2896,64 @@ export function NewCommunicationPage() {
 
 export function NewFilePage() {
   const router = useRouter();
-  const { uploadFile } = useBuzzStore();
+  const { customers, forms, invoices, leads, tasks, uploadFile } = useBuzzStore();
   const [name, setName] = useState('');
+  const [fileBlob, setFileBlob] = useState(null);
+  const [relatedType, setRelatedType] = useState('lead');
+  const [relatedId, setRelatedId] = useState('');
+  const relatedCollections = {
+    lead: leads.map((item) => ({ value: item.id, label: `Lead ${item.id}` })),
+    customer: customers.map((item) => ({ value: item.id, label: `Customer ${item.id}` })),
+    task: tasks.map((item) => ({ value: item.id, label: `Task ${item.id}` })),
+    invoice: invoices.map((item) => ({ value: item.id, label: `Invoice ${item.id}` })),
+    form: forms.map((item) => ({ value: item.id, label: `Form ${item.id}` })),
+  };
+  const relatedOptions = relatedCollections[relatedType] || [];
   return (
     <PageShell title="Upload File" subtitle="Upload and link a file">
-      <Card style={{ padding: 18 }}>
+      <Card style={{ padding: 18, display: 'grid', gap: 12 }}>
         <Field label="Filename" value={name} onChange={(event) => setName(event.target.value)} placeholder="northstar-proposal.pdf" />
+        <div>
+          <Label style={{ marginBottom: 6 }}>Real file</Label>
+          <input type="file" onChange={(event) => { const selected = event.target.files?.[0] || null; setFileBlob(selected); if (selected?.name) setName(selected.name); }} />
+          {fileBlob ? <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-2)' }}>{fileBlob.name} · {fileBlob.type || 'application/octet-stream'} · {Math.max(1, Math.round(fileBlob.size / 1024))} KB</div> : null}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <SelectField label="Related Record Type" value={relatedType} onChange={(event) => { setRelatedType(event.target.value); setRelatedId(''); }} options={[{ value: 'lead', label: 'Lead' }, { value: 'customer', label: 'Customer' }, { value: 'task', label: 'Task' }, { value: 'invoice', label: 'Invoice' }, { value: 'form', label: 'Form' }]} />
+          <SelectField label="Related Record" value={relatedId} onChange={(event) => setRelatedId(event.target.value)} options={[{ value: '', label: `Select ${relatedType}` }, ...relatedOptions]} />
+        </div>
       </Card>
-      <SaveBar primaryLabel="Upload File" onSave={() => { const id = uploadFile({ name }); router.push(`/files/${id}`); }} />
+      <SaveBar primaryLabel="Upload File" onSave={async () => {
+        const relatedRecord = relatedOptions.find((item) => item.value === relatedId);
+        let contentUrl = '';
+        if (fileBlob) {
+          contentUrl = await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.readAsDataURL(fileBlob);
+          });
+        }
+        const id = uploadFile({
+          name: name || fileBlob?.name,
+          linked: relatedRecord?.label || 'Lead L-1048',
+          type: fileBlob?.type || 'File',
+          mimeType: fileBlob?.type || 'application/octet-stream',
+          sizeBytes: fileBlob?.size || 0,
+          contentUrl,
+        });
+        router.push(`/files/${id}`);
+      }} />
     </PageShell>
   );
 }
 
 export function CommunicationDetailPage({ id }) {
-  const { communications } = useBuzzStore();
+  const [toast, flash] = useFlashMessage();
+  const { communications, retryCommunication } = useBuzzStore();
   const item = communications.find((row) => row.id === id);
   if (!item) return <PageShell title="Communication not found" subtitle="The selected communication record could not be found."><EmptyState title="Missing communication" detail="Open the record again from the communication page." /></PageShell>;
   const thread = communications.filter((row) => row.threadId === item.threadId);
-  return <PageShell title={item.title} subtitle={`${item.type} · ${item.linked}`}>
+  return <><PageShell title={item.title} subtitle={`${item.type} · ${item.linked}`} action={item.status === 'failed' ? <Button variant="primary" onClick={() => { retryCommunication(item.id); flash('Communication retry queued.'); }}><Icon d={ICONS.undo} size={14} />Retry</Button> : null}>
     <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: 16 }}>
       <Card style={{ padding: 18 }}>
         <Label style={{ marginBottom: 10 }}>Conversation Thread</Label>
@@ -2704,7 +2967,7 @@ export function CommunicationDetailPage({ id }) {
         <Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Attachments</Label><div style={{ display: 'grid', gap: 8 }}>{(item.attachments?.length ? item.attachments : ['No attachments']).map((attachment) => <div key={attachment} style={{ fontSize: 12, color: 'var(--text-2)' }}>{attachment}</div>)}</div></Card>
       </div>
     </div>
-  </PageShell>;
+  </PageShell><Toast message={toast} /></>;
 }
 
 export function TaskDetailPage({ id }) {
@@ -2809,5 +3072,5 @@ export function FileDetailPage({ id }) {
   const { files } = useBuzzStore();
   const file = files.find((row) => row.id === id);
   if (!file) return <PageShell title="File not found" subtitle="The selected file could not be found."><EmptyState title="Missing file" detail="Open the file again from the file list." /></PageShell>;
-  return <PageShell title={file.name} subtitle={`${file.type} · ${file.size}`}><Card style={{ padding: 18 }}><div style={{ fontSize: 13, color: 'var(--text-2)' }}>Linked object: {file.linked}</div></Card></PageShell>;
+  return <PageShell title={file.name} subtitle={`${file.type} · ${file.size}`}><Card style={{ padding: 18, display: 'grid', gap: 10 }}><div style={{ fontSize: 13, color: 'var(--text-2)' }}>Linked object: {file.linked}</div><div style={{ fontSize: 13, color: 'var(--text-2)' }}>Mime type: {file.mimeType || file.type}</div><div style={{ fontSize: 13, color: 'var(--text-2)' }}>Exact size: {file.sizeBytes || 0} bytes</div>{file.contentUrl ? <a href={file.contentUrl} download={file.name} style={{ fontSize: 13, fontWeight: 700, color: 'var(--primary)' }}>Download file</a> : <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No binary payload stored for this seeded file.</div>}</Card></PageShell>;
 }
