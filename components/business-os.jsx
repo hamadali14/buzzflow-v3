@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { NAV_ITEMS } from '@/lib/navigation';
@@ -57,6 +57,27 @@ const UI = {
   overlay: 'var(--overlay)',
 };
 
+const TEAM_MEMBERS = [
+  { name: 'Alex', role: 'admin', scope: 'Full workspace access, builder publishing, automation, and finance approvals.' },
+  { name: 'Sarah', role: 'sales', scope: 'Leads, customers, communication, and outbound activity.' },
+  { name: 'Mika', role: 'ops', scope: 'Tasks, delivery, files, and customer operations.' },
+  { name: 'Noah', role: 'finance', scope: 'Invoices, payment follow-up, and billing controls.' },
+  { name: 'Emma', role: 'support', scope: 'Support tasks, communication notes, and customer follow-up.' },
+];
+
+const ROLE_OPTIONS = TEAM_MEMBERS.map((member) => ({ value: member.role, label: `${member.role}` }));
+
+function scopeByRole(role, item) {
+  if (role === 'admin') return true;
+  if (role === 'sales') return ['lead', 'customer', 'communication', 'task'].includes(item);
+  if (role === 'ops') return ['customer', 'task', 'form', 'file'].includes(item);
+  if (role === 'finance') return ['invoice', 'customer', 'task', 'communication'].includes(item);
+  if (role === 'support') return ['customer', 'task', 'communication', 'file'].includes(item);
+  return true;
+}
+
+const COMMAND_STORAGE_KEY = 'buzzflow-command-pins-v1';
+
 function useFlashMessage() {
   const [message, setMessage] = useState('');
 
@@ -82,6 +103,21 @@ function EmptyState({ title, detail }) {
     <Card style={{ padding: 22 }}>
       <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--text)' }}>{title}</div>
       <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 6, lineHeight: 1.6 }}>{detail}</div>
+    </Card>
+  );
+}
+
+function SmartEmptyState({ title, detail, actionLabel, actionHref, secondaryLabel, secondaryHref }) {
+  return (
+    <Card style={{ padding: 22 }}>
+      <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--text)' }}>{title}</div>
+      <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 6, lineHeight: 1.6 }}>{detail}</div>
+      {(actionLabel || secondaryLabel) ? (
+        <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
+          {actionLabel ? <Button href={actionHref} variant="primary">{actionLabel}</Button> : null}
+          {secondaryLabel ? <Button href={secondaryHref}>{secondaryLabel}</Button> : null}
+        </div>
+      ) : null}
     </Card>
   );
 }
@@ -122,6 +158,57 @@ function Field({ label, value, onChange, placeholder = '' }) {
       <Label style={{ marginBottom: 6 }}>{label}</Label>
       <input value={value} onChange={onChange} placeholder={placeholder} style={{ width: '100%', padding: '10px 14px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 10, color: 'var(--text)', outline: 'none' }} />
     </div>
+  );
+}
+
+function TextAreaField({ label, value, onChange, placeholder = '', rows = 4 }) {
+  return (
+    <div>
+      <Label style={{ marginBottom: 6 }}>{label}</Label>
+      <textarea value={value} onChange={onChange} placeholder={placeholder} rows={rows} style={{ width: '100%', padding: '10px 14px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 10, color: 'var(--text)', outline: 'none', resize: 'vertical', minHeight: rows * 24 }} />
+    </div>
+  );
+}
+
+function SelectField({ label, value, onChange, options }) {
+  return (
+    <div>
+      <Label style={{ marginBottom: 6 }}>{label}</Label>
+      <select value={value} onChange={onChange} style={{ width: '100%', padding: '10px 14px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 10, color: 'var(--text)', outline: 'none' }}>
+        {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function ToggleField({ label, checked, onChange, hint }) {
+  return (
+    <label style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '10px 12px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 10 }}>
+      <div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{label}</div>
+        {hint ? <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 3 }}>{hint}</div> : null}
+      </div>
+      <input type="checkbox" checked={checked} onChange={onChange} style={{ width: 16, height: 16, accentColor: 'var(--primary)', marginTop: 2 }} />
+    </label>
+  );
+}
+
+function InlineEditor({ editing, onEditToggle, onSave, children, actions }) {
+  return (
+    <Card style={{ padding: 18 }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginBottom: 12 }}>
+        {editing ? (
+          <>
+            <Button onClick={onEditToggle}>Cancel</Button>
+            <Button variant="primary" onClick={onSave}>Save</Button>
+          </>
+        ) : (
+          <Button onClick={onEditToggle}><Icon d={ICONS.edit} size={13} />Edit</Button>
+        )}
+        {actions}
+      </div>
+      {children}
+    </Card>
   );
 }
 
@@ -205,7 +292,13 @@ function badgeColor(value) {
     warm: 'yellow',
     high: 'red',
     late: 'red',
+    failed: 'red',
     blocked: 'red',
+    done: 'green',
+    'in progress': 'cyan',
+    partial: 'yellow',
+    review: 'yellow',
+    'at risk': 'red',
     duplicate: 'yellow',
     unread: 'purple',
     sent: 'cyan',
@@ -217,6 +310,214 @@ function badgeColor(value) {
     medium: 'yellow',
     low: 'gray',
   }[String(value).toLowerCase()] || 'gray');
+}
+
+const TASK_STATUS_OPTIONS = [
+  { value: 'todo', label: 'Todo' },
+  { value: 'in progress', label: 'In Progress' },
+  { value: 'blocked', label: 'Blocked' },
+  { value: 'done', label: 'Done' },
+];
+
+const TASK_PRIORITY_OPTIONS = [
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+];
+
+const TASK_TYPE_OPTIONS = [
+  { value: 'call', label: 'Call' },
+  { value: 'email', label: 'Email' },
+  { value: 'follow-up', label: 'Follow-up' },
+  { value: 'meeting', label: 'Meeting' },
+  { value: 'internal', label: 'Internal' },
+];
+
+const TASK_REMINDER_OPTIONS = [
+  { value: '15m', label: '15 minutes before' },
+  { value: '1h', label: '1 hour before' },
+  { value: '1d', label: '1 day before' },
+];
+
+const TASK_RECURRING_OPTIONS = [
+  { value: 'daily', label: 'Daily' },
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'monthly', label: 'Monthly' },
+];
+
+const CUSTOMER_HEALTH_OPTIONS = [
+  { value: 'healthy', label: 'Healthy' },
+  { value: 'stable', label: 'Stable' },
+  { value: 'at risk', label: 'At Risk' },
+];
+
+const CUSTOMER_SIZE_OPTIONS = [
+  { value: '1-10', label: '1-10' },
+  { value: '11-50', label: '11-50' },
+  { value: '51-200', label: '51-200' },
+  { value: '200+', label: '200+' },
+];
+
+const COMMUNICATION_STATUS_OPTIONS = [
+  { value: 'draft', label: 'Draft' },
+  { value: 'queued', label: 'Queued' },
+  { value: 'sent', label: 'Sent' },
+  { value: 'failed', label: 'Failed' },
+];
+
+const COMMUNICATION_TEMPLATE_OPTIONS = [
+  { value: 'blank', label: 'Blank' },
+  { value: 'follow-up', label: 'Follow-up' },
+  { value: 'proposal', label: 'Proposal' },
+  { value: 'check-in', label: 'Check-in' },
+  { value: 'internal-update', label: 'Internal Update' },
+];
+
+function recordPathFromTask(task) {
+  if (task.related?.type === 'lead' && task.related.id) return `/leads/${task.related.id}`;
+  if (task.related?.type === 'customer' && task.related.id) return `/customers/${task.related.id}`;
+  if (task.related?.type === 'entry' && task.related.id) return `/entries/${task.related.id}`;
+  if (task.related?.type === 'form' && task.related.id) return `/forms/${task.related.id}`;
+  if (task.related?.type === 'invoice' && task.related.id) return `/invoices/${task.related.id}`;
+  if (task.related?.type === 'file' && task.related.id) return `/files/${task.related.id}`;
+  return '/tasks';
+}
+
+function isTodayDate(value) {
+  if (!value) return false;
+  const today = new Date().toISOString().slice(0, 10);
+  return String(value).slice(0, 10) === today;
+}
+
+function isOverdueTask(task) {
+  if (String(task.due).toLowerCase() === 'late') return true;
+  if (!task.dueDate) return false;
+  const today = new Date().toISOString().slice(0, 10);
+  return task.dueDate < today && task.status !== 'done';
+}
+
+function recordPathFromCommunication(item) {
+  if (item.related?.type === 'lead' && item.related.id) return `/leads/${item.related.id}`;
+  if (item.related?.type === 'customer' && item.related.id) return `/customers/${item.related.id}`;
+  if (item.related?.type === 'task' && item.related.id) return `/tasks/${item.related.id}`;
+  if (item.related?.type === 'form' && item.related.id) return `/forms/${item.related.id}`;
+  if (String(item.linked || '').startsWith('Lead ')) return `/leads/${String(item.linked).replace('Lead ', '')}`;
+  if (String(item.linked || '').startsWith('Customer ')) return `/customers/${String(item.linked).replace('Customer ', '')}`;
+  if (String(item.linked || '').startsWith('Task ')) return `/tasks/${String(item.linked).replace('Task ', '')}`;
+  return `/communication/${item.id}`;
+}
+
+function recordPathFromActivity(item) {
+  if (item.type === 'email' || item.type === 'note') return '/communication';
+  if (item.type === 'lead') return '/leads';
+  if (item.type === 'invoice') return '/invoices';
+  if (item.type === 'task') return '/tasks';
+  if (item.type === 'customer') return '/customers';
+  return '/activity';
+}
+
+function commandMatches(item, query) {
+  if (!query) return true;
+  const haystack = [item.label, item.sub, item.kind, ...(item.keywords || [])].join(' ').toLowerCase();
+  return haystack.includes(query);
+}
+
+function CommandPalette({ query, onQueryChange, actions, records, pinned, onTogglePin, onClose, onSelect, selectedId }) {
+  return (
+    <Modal
+      title="Command Palette"
+      subtitle="Search records or jump to a quick action."
+      onClose={onClose}
+      actions={<Button onClick={onClose}>Close</Button>}
+    >
+      <div style={{ position: 'relative' }}>
+        <Icon d={ICONS.search} size={14} color="var(--text-3)" style={{ position: 'absolute', left: 12, top: 12 }} />
+        <input autoFocus value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="Search forms, leads, customers, tasks, invoices, files, communication..." style={{ width: '100%', height: 40, padding: '0 12px 0 34px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 10, color: 'var(--text)', fontSize: 12, outline: 'none' }} />
+      </div>
+      <div style={{ display: 'grid', gap: 14, maxHeight: '60vh', overflow: 'auto' }}>
+        {pinned.length ? (
+          <div>
+            <Label style={{ marginBottom: 8 }}>Pinned</Label>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {pinned.map((item) => (
+                <button key={item.id} type="button" onClick={() => onSelect(item)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px', borderRadius: 10, border: selectedId === item.id ? `1px solid var(--primary)` : `1px solid ${UI.border}`, background: UI.panelSoft, textAlign: 'left' }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{item.label}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{item.sub}</div>
+                  </div>
+                  <Badge color="yellow">Pinned</Badge>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        <div>
+          <Label style={{ marginBottom: 8 }}>Quick Actions</Label>
+          <div style={{ display: 'grid', gap: 8 }}>
+            {actions.length ? actions.map((item) => (
+              <button key={item.id} type="button" onClick={() => onSelect(item)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px', borderRadius: 10, border: selectedId === item.id ? `1px solid var(--primary)` : `1px solid ${UI.border}`, background: UI.panelSoft, textAlign: 'left' }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{item.label}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{item.sub}</div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <button type="button" onClick={(event) => { event.stopPropagation(); onTogglePin(item); }} style={{ background: 'transparent', border: 'none', padding: 0, fontSize: 11, color: 'var(--text-3)', fontWeight: 700 }}>Pin</button>
+                  <Badge color="purple">{item.kind}</Badge>
+                </div>
+              </button>
+            )) : <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No matching actions.</div>}
+          </div>
+        </div>
+        <div>
+          <Label style={{ marginBottom: 8 }}>Records</Label>
+          <div style={{ display: 'grid', gap: 8 }}>
+            {records.length ? records.map((item) => (
+              <button key={item.id} type="button" onClick={() => onSelect(item)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px', borderRadius: 10, border: selectedId === item.id ? `1px solid var(--primary)` : `1px solid ${UI.border}`, background: UI.panel, textAlign: 'left' }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{item.label}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{item.sub}</div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <button type="button" onClick={(event) => { event.stopPropagation(); onTogglePin(item); }} style={{ background: 'transparent', border: 'none', padding: 0, fontSize: 11, color: 'var(--text-3)', fontWeight: 700 }}>Pin</button>
+                  <Badge color="gray">{item.kind}</Badge>
+                </div>
+              </button>
+            )) : <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No matching records.</div>}
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function eventTone(event = '') {
+  if (/paid|healthy|assigned|published|emailed|created|submitted|completed|converted/i.test(event)) return 'green';
+  if (/overdue|late|failed|blocked|at risk/i.test(event)) return 'red';
+  if (/updated|edited|changed|note/i.test(event)) return 'yellow';
+  return 'gray';
+}
+
+function TimelineList({ items, emptyTitle, emptyDetail, actionLabel, actionHref }) {
+  if (!items.length) {
+    return <SmartEmptyState title={emptyTitle} detail={emptyDetail} actionLabel={actionLabel} actionHref={actionHref} />;
+  }
+  return (
+    <Card style={{ padding: 18 }}>
+      <Label style={{ marginBottom: 12 }}>Timeline</Label>
+      <div style={{ display: 'grid', gap: 10 }}>
+        {items.map((item) => (
+          <div key={item.id} style={{ display: 'grid', gridTemplateColumns: '110px 1fr 110px', gap: 12, alignItems: 'start', paddingBottom: 10, borderBottom: `1px solid ${UI.border}` }}>
+            <Badge color={eventTone(item.title)}>{item.time || 'Now'}</Badge>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{item.title}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 3 }}>{item.detail}</div>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-2)', fontWeight: 700, textAlign: 'right' }}>{item.actor}</div>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
 }
 
 const BUILDER_COLORS = ['#7C3AED', '#2563EB', '#059669', '#DC2626', '#D97706', '#DB2777', '#0891B2'];
@@ -252,6 +553,7 @@ function normalizeBuilderFields(schema) {
     half: Boolean(field.half),
     placeholder: field.placeholder || '',
     options: Array.isArray(field.options) ? field.options : [],
+    showWhen: field.showWhen?.fieldId ? { fieldId: field.showWhen.fieldId, value: field.showWhen.value || '' } : null,
   }));
 }
 
@@ -295,6 +597,30 @@ function deriveEntryPayload(fields, values) {
     phone: values[phoneField?.id] || '',
     raw,
   };
+}
+
+function shouldDisplayField(field, values) {
+  if (!field?.showWhen?.fieldId) return true;
+  const sourceValue = values[field.showWhen.fieldId];
+  if (Array.isArray(sourceValue)) return sourceValue.includes(field.showWhen.value);
+  if (typeof sourceValue === 'boolean') return String(sourceValue) === String(field.showWhen.value);
+  return String(sourceValue || '') === String(field.showWhen.value || '');
+}
+
+function buildFormSteps(fields, multiStepEnabled) {
+  if (!multiStepEnabled) return [{ id: 'step-all', label: 'All Fields', fields }];
+  const sections = [];
+  let current = { id: 'step-1', label: 'Step 1', fields: [] };
+  fields.forEach((field) => {
+    if (field.type === 'section') {
+      if (current.fields.length) sections.push(current);
+      current = { id: field.id, label: field.label || `Step ${sections.length + 1}`, fields: [] };
+      return;
+    }
+    current.fields.push(field);
+  });
+  if (current.fields.length) sections.push(current);
+  return sections.length ? sections : [{ id: 'step-all', label: 'All Fields', fields: fields.filter((field) => field.type !== 'section') }];
 }
 
 function topBarButton(active) {
@@ -375,7 +701,7 @@ function AppSidebar() {
   );
 }
 
-export function TopBar() {
+export function TopBar({ onOpenCommandPalette }) {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
 
@@ -383,6 +709,11 @@ export function TopBar() {
     <div className="buzz-topbar" style={{ height: 52, borderBottom: `1px solid ${UI.border}`, display: 'flex', alignItems: 'center', padding: '0 20px', gap: 10, background: 'rgba(255,255,255,0.84)', backdropFilter: 'blur(16px)', flexShrink: 0, position: 'relative', zIndex: 50 }}>
       <div style={{ flex: 1 }} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, position: 'relative' }}>
+        <button type="button" onClick={onOpenCommandPalette} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 10px', borderRadius: 10, background: UI.panelSoft, border: `1px solid ${UI.border}` }}>
+          <Icon d={ICONS.search} size={14} color="var(--text-2)" />
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-2)' }}>Search</span>
+          <Badge color="gray">⌘K</Badge>
+        </button>
         <button type="button" onClick={() => setNotificationsOpen((current) => !current)} style={{ width: 32, height: 32, borderRadius: 8, background: UI.panelSoft, border: `1px solid ${UI.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
           <Icon d={ICONS.bell} size={14} color="var(--text-2)" />
           <div style={{ position: 'absolute', top: 7, right: 7, width: 6, height: 6, borderRadius: '50%', background: '#EF4444', border: '1.5px solid #fff' }} />
@@ -412,8 +743,12 @@ export function TopBar() {
 export function AppLayout({ children }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { builderSession, clearBuilderSession, commitBuilderSession } = useBuzzStore();
+  const { activity, builderSession, clearBuilderSession, commitBuilderSession, communications, customers, entries, files, forms, invoices, leads, tasks } = useBuzzStore();
   const [pendingNavigation, setPendingNavigation] = useState('');
+  const [commandOpen, setCommandOpen] = useState(false);
+  const [commandQuery, setCommandQuery] = useState('');
+  const [pinnedCommands, setPinnedCommands] = useState([]);
+  const [selectedCommandId, setSelectedCommandId] = useState('');
 
   const requestNavigation = (href) => {
     if (!href || href === pathname) return;
@@ -438,15 +773,143 @@ export function AppLayout({ children }) {
     router.push(href);
   };
 
+  const openCommandPalette = useCallback(() => {
+    setCommandQuery('');
+    setCommandOpen(true);
+  }, []);
+
+  const closeCommandPalette = useCallback(() => {
+    setCommandOpen(false);
+    setCommandQuery('');
+  }, []);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(COMMAND_STORAGE_KEY);
+      if (raw) {
+        setPinnedCommands(JSON.parse(raw));
+      }
+    } catch (error) {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(COMMAND_STORAGE_KEY, JSON.stringify(pinnedCommands));
+    } catch (error) {}
+  }, [pinnedCommands]);
+
+  useEffect(() => {
+    const handleKeydown = (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setCommandOpen((current) => !current);
+        setCommandQuery('');
+      }
+      if (event.key === 'Escape') {
+        setCommandOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeydown);
+    return () => window.removeEventListener('keydown', handleKeydown);
+  }, []);
+
+  const actionItems = useMemo(() => {
+    const base = [
+      { id: 'action-dashboard', label: 'Open dashboard', sub: 'Jump back to the main workspace view.', kind: 'action', href: '/dashboard', keywords: ['home summary overview'] },
+      { id: 'action-forms', label: 'Open forms', sub: 'Review published and draft forms.', kind: 'action', href: '/forms', keywords: ['builder form registry'] },
+      { id: 'action-new-lead', label: 'Create lead', sub: 'Open the lead creation flow.', kind: 'action', href: '/leads/new', keywords: ['new lead add lead sales'] },
+      { id: 'action-new-customer', label: 'Create customer', sub: 'Open the customer creation flow.', kind: 'action', href: '/customers/new', keywords: ['new customer account'] },
+      { id: 'action-new-task', label: 'Create task', sub: 'Open the task creation flow.', kind: 'action', href: '/tasks/new', keywords: ['new task follow-up assign'] },
+      { id: 'action-new-communication', label: 'Compose message', sub: 'Open the communication composer.', kind: 'action', href: '/communication/new', keywords: ['email note message mail'] },
+      { id: 'action-new-invoice', label: 'Create invoice', sub: 'Open the invoice creation flow.', kind: 'action', href: '/invoices/new', keywords: ['billing finance payment'] },
+      { id: 'action-upload-file', label: 'Upload file', sub: 'Attach a file to a record.', kind: 'action', href: '/files/new', keywords: ['attachment document upload'] },
+    ];
+    const query = commandQuery.trim().toLowerCase();
+    return base.filter((item) => commandMatches(item, query)).slice(0, 8);
+  }, [commandQuery]);
+
+  const recordItems = useMemo(() => {
+    const records = [
+      ...forms.map((item) => ({ id: `form-${item.id}`, label: item.name, sub: `${item.status} · ${item.fields || 0} fields`, kind: 'form', href: `/forms/${item.id}`, keywords: [item.code || '', item.endpoint || ''] })),
+      ...entries.map((item) => ({ id: `entry-${item.id}`, label: item.contact || item.email || item.id, sub: `${item.state} · ${item.form}`, kind: 'entry', href: `/entries/${item.id}`, keywords: [item.email || '', item.phone || ''] })),
+      ...leads.map((item) => ({ id: `lead-${item.id}`, label: item.name, sub: `${item.company} · ${item.status} · score ${item.score}`, kind: 'lead', href: `/leads/${item.id}`, keywords: [item.email || '', item.source || '', item.owner || ''] })),
+      ...customers.map((item) => ({ id: `customer-${item.id}`, label: item.companyName || item.name, sub: `${item.owner} · ${item.stage} · ${item.health}`, kind: 'customer', href: `/customers/${item.id}`, keywords: [item.contactPerson || '', item.email || '', ...(item.tags || [])] })),
+      ...tasks.map((item) => ({ id: `task-${item.id}`, label: item.title, sub: `${item.status} · ${item.owner} · ${item.link}`, kind: 'task', href: `/tasks/${item.id}`, keywords: [item.type || '', item.priority || '', item.owner || ''] })),
+      ...invoices.map((item) => ({ id: `invoice-${item.id}`, label: item.id, sub: `${item.customer} · ${item.amount} · ${item.status}`, kind: 'invoice', href: `/invoices/${item.id}`, keywords: [item.customer || '', item.status || '', item.due || ''] })),
+      ...files.map((item) => ({ id: `file-${item.id}`, label: item.name, sub: `${item.type} · ${item.linked}`, kind: 'file', href: `/files/${item.id}`, keywords: [item.linked || '', item.type || ''] })),
+      ...communications.map((item) => ({ id: `communication-${item.id}`, label: item.title, sub: `${item.status} · ${item.type} · ${item.linked}`, kind: 'communication', href: `/communication/${item.id}`, keywords: [item.owner || '', item.template || '', item.linked || ''] })),
+      ...activity.map((item) => ({ id: `activity-${item.id}`, label: `${item.form}`, sub: `${item.type} · ${item.user}`, kind: 'activity', href: recordPathFromActivity(item), keywords: [item.user || '', item.type || ''] })),
+    ];
+    const query = commandQuery.trim().toLowerCase();
+    return records.filter((item) => commandMatches(item, query)).slice(0, 14);
+  }, [activity, commandQuery, communications, customers, entries, files, forms, invoices, leads, tasks]);
+
+  const visiblePinned = useMemo(() => pinnedCommands.filter((item) => commandMatches(item, commandQuery.trim().toLowerCase())).slice(0, 6), [commandQuery, pinnedCommands]);
+  const navigableCommands = useMemo(() => [...visiblePinned, ...actionItems, ...recordItems], [actionItems, recordItems, visiblePinned]);
+
+  const runCommand = useCallback((item) => {
+    closeCommandPalette();
+    if (item.href) {
+      requestNavigation(item.href);
+    }
+  }, [closeCommandPalette, requestNavigation]);
+
+  const togglePinCommand = useCallback((item) => {
+    setPinnedCommands((current) => (
+      current.some((row) => row.id === item.id)
+        ? current.filter((row) => row.id !== item.id)
+        : [item, ...current].slice(0, 8)
+    ));
+  }, []);
+
+  useEffect(() => {
+    setSelectedCommandId(navigableCommands[0]?.id || '');
+  }, [commandOpen, navigableCommands]);
+
+  useEffect(() => {
+    if (!commandOpen) return;
+    const handlePaletteKeys = (event) => {
+      if (!navigableCommands.length) return;
+      const currentIndex = Math.max(0, navigableCommands.findIndex((item) => item.id === selectedCommandId));
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setSelectedCommandId(navigableCommands[(currentIndex + 1) % navigableCommands.length].id);
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setSelectedCommandId(navigableCommands[(currentIndex - 1 + navigableCommands.length) % navigableCommands.length].id);
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        runCommand(navigableCommands[currentIndex]);
+      }
+    };
+    window.addEventListener('keydown', handlePaletteKeys);
+    return () => window.removeEventListener('keydown', handlePaletteKeys);
+  }, [commandOpen, navigableCommands, runCommand, selectedCommandId]);
+
   return (
     <AppChromeContext.Provider value={{ requestNavigation }}>
       <div className="buzz-shell" style={{ display: 'flex', minHeight: '100vh' }}>
         <AppSidebar />
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-          <TopBar />
+          <TopBar onOpenCommandPalette={openCommandPalette} />
           <main className="buzz-main" style={{ display: 'flex' }}>{children}</main>
         </div>
       </div>
+      {commandOpen ? (
+        <CommandPalette
+          query={commandQuery}
+          onQueryChange={setCommandQuery}
+          actions={actionItems}
+          records={recordItems}
+          pinned={visiblePinned}
+          onTogglePin={togglePinCommand}
+          onClose={closeCommandPalette}
+          onSelect={runCommand}
+          selectedId={selectedCommandId}
+        />
+      ) : null}
       {pendingNavigation ? (
         <Modal
           title="Unsaved Changes"
@@ -482,6 +945,17 @@ export function PageShell({ title, subtitle, action, children }) {
       {children}
     </div>
   );
+}
+
+function buildTimelineEntries({ logs = [], communications = [], tasks = [], invoices = [], entries = [], forms = [], matchObject = () => false, matchCommunication = () => false, matchTask = () => false, matchInvoice = () => false, matchEntry = () => false, matchForm = () => false }) {
+  return [
+    ...logs.filter((item) => matchObject(item.object) || matchObject(item.what)).map((item) => ({ id: `log-${item.id}`, title: item.what, detail: item.object, actor: item.actor, time: item.time })),
+    ...communications.filter((item) => matchCommunication(item)).map((item) => ({ id: `com-${item.id}`, title: item.title, detail: item.detail, actor: item.owner, time: item.status || 'draft' })),
+    ...tasks.filter((item) => matchTask(item)).map((item) => ({ id: `task-${item.id}`, title: item.status === 'done' ? 'Task completed' : item.status === 'blocked' ? 'Task blocked' : 'Task assigned', detail: `${item.title} · ${item.type}`, actor: item.owner, time: item.due || 'Scheduled' })),
+    ...invoices.filter((item) => matchInvoice(item)).map((item) => ({ id: `invoice-${item.id}`, title: item.status === 'paid' ? 'Invoice paid' : 'Invoice created', detail: `${item.id} · ${item.amount}`, actor: 'Finance', time: item.due })),
+    ...entries.filter((item) => matchEntry(item)).map((item) => ({ id: `entry-${item.id}`, title: 'Form submitted', detail: `${item.form} · ${item.contact}`, actor: item.email || 'Public form', time: item.submitted })),
+    ...forms.filter((item) => matchForm(item)).map((item) => ({ id: `form-${item.id}`, title: item.status === 'active' ? 'Form published' : 'Form updated', detail: `${item.name} · ${item.status}`, actor: 'Alex', time: item.updated })),
+  ].slice(0, 12);
 }
 
 function PanelTitle({ title, right }) {
@@ -586,6 +1060,9 @@ export function DashboardPage() {
   const unpaidTotal = invoices
     .filter((invoice) => invoice.status !== 'paid')
     .reduce((sum, invoice) => sum + Number(String(invoice.amount).replace(/[^\d]/g, '')), 0);
+  const highIntentLeads = leads.filter((lead) => lead.priority === 'high' || lead.score >= 80).slice(0, 3);
+  const atRiskForms = forms.filter((form) => (form.status === 'active' && form.conversion < 45) || form.status === 'paused').slice(0, 4);
+  const overdueTasks = entries.filter((entry) => entry.state === 'unread' || /Missing|Urgent|Duplicate/.test(entry.quality)).slice(0, 4);
   const startCreateForm = () => {
     const name = window.prompt('Form name');
     if (!name) return;
@@ -600,6 +1077,46 @@ export function DashboardPage() {
         <MetricCard label="New Leads" value={String(leads.length)} change={8.3} icon={ICONS.bolt} color="#22D3EE" />
         <MetricCard label="Active Customers" value={String(customers.length)} change={4.8} icon={ICONS.user} color="#10B981" />
         <MetricCard label="Unpaid Invoices" value={`SEK ${unpaidTotal.toLocaleString()}`} change={-2.1} icon={ICONS.hash} color="#F59E0B" />
+      </div>
+
+      <div className="buzz-dashboard-grid" style={{ display: 'grid', gridTemplateColumns: '1.2fr 0.8fr 0.8fr', gap: 16 }}>
+        <Card style={{ padding: 18 }}>
+          <PanelTitle title="Actionable Dashboard" right={<Badge color="purple">live</Badge>} />
+          <div style={{ display: 'grid', gap: 10 }}>
+            {highIntentLeads.length ? highIntentLeads.map((lead) => (
+              <button key={lead.id} type="button" onClick={() => router.push(`/leads/${lead.id}`)} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', border: `1px solid ${UI.border}`, background: UI.panelSoft, borderRadius: 10, padding: '12px 12px', textAlign: 'left' }}>
+                <div style={{ width: 10, height: 10, borderRadius: '50%', background: lead.priority === 'high' ? '#10B981' : '#F59E0B', boxShadow: `0 0 10px ${lead.priority === 'high' ? '#10B981' : '#F59E0B'}` }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>{lead.name} · {lead.company}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Score {lead.score} · {lead.owner} · {lead.next}</div>
+                </div>
+                <Badge color={badgeColor(lead.priority)}>{lead.priority}</Badge>
+              </button>
+            )) : <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No high-intent leads waiting right now.</div>}
+          </div>
+        </Card>
+        <Card style={{ padding: 18 }}>
+          <PanelTitle title="Forms At Risk" right={<Badge color="yellow">{atRiskForms.length}</Badge>} />
+          <div style={{ display: 'grid', gap: 10 }}>
+            {atRiskForms.length ? atRiskForms.map((form) => (
+              <button key={form.id} type="button" onClick={() => router.push(`/forms/${form.id}`)} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4, width: '100%', border: `1px solid ${UI.border}`, background: UI.panelSoft, borderRadius: 10, padding: '12px 12px', textAlign: 'left' }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>{form.name}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{form.status} · {form.conversion}% conversion</div>
+              </button>
+            )) : <div style={{ fontSize: 12, color: 'var(--text-3)' }}>All active forms are within healthy conversion ranges.</div>}
+          </div>
+        </Card>
+        <Card style={{ padding: 18 }}>
+          <PanelTitle title="Inbox Pressure" right={<Badge color="red">{overdueTasks.length}</Badge>} />
+          <div style={{ display: 'grid', gap: 10 }}>
+            {overdueTasks.length ? overdueTasks.map((entry) => (
+              <button key={entry.id} type="button" onClick={() => router.push(`/entries/${entry.id}`)} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4, width: '100%', border: `1px solid ${UI.border}`, background: UI.panelSoft, borderRadius: 10, padding: '12px 12px', textAlign: 'left' }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>{entry.contact}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{entry.form} · {entry.quality}</div>
+              </button>
+            )) : <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No unread or risky submissions in the inbox.</div>}
+          </div>
+        </Card>
       </div>
 
       <div className="buzz-dashboard-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 288px', gap: 18, flex: 1, minHeight: 0 }}>
@@ -686,7 +1203,7 @@ export function FormsPage() {
           All forms in one place. Open a form to edit, preview, publish, or copy its embed script.
         </div>
       </Card>
-      <TableCard
+      {forms.length ? <TableCard
         title="Form Registry"
         headers={[
           { label: 'Form', w: '1fr' },
@@ -710,7 +1227,7 @@ export function FormsPage() {
             ]}
           />
         ))}
-      />
+      /> : <SmartEmptyState title="Publish a form to start collecting leads" detail="Your first live form unlocks submissions, lead scoring, communication, tasks, files, and timeline history." actionLabel="New Form" actionHref="/forms" secondaryLabel="Open Dashboard" secondaryHref="/dashboard" />}
     </PageShell>
   );
 }
@@ -767,11 +1284,13 @@ export function EntriesPage() {
 
 export function LeadsPage() {
   const router = useRouter();
-  const { leads } = useBuzzStore();
+  const { leads, workspace } = useBuzzStore();
+  const role = workspace?.currentRole || 'admin';
   const [search, setSearch] = useState('');
   const [highPriorityOnly, setHighPriorityOnly] = useState(false);
   const [sortByScore, setSortByScore] = useState(true);
   const rows = [...leads]
+    .filter((lead) => scopeByRole(role, 'lead') && (role === 'admin' || role === 'sales' ? true : lead.owner === 'Alex'))
     .filter((lead) => {
       const haystack = `${lead.name} ${lead.company} ${lead.source} ${lead.owner} ${lead.tags.join(' ')}`.toLowerCase();
       return haystack.includes(search.toLowerCase()) && (!highPriorityOnly || lead.priority === 'high');
@@ -817,19 +1336,21 @@ export function PipelinePage() {
 }
 
 export function CustomersPage() {
-  const { customers } = useBuzzStore();
+  const { customers, workspace } = useBuzzStore();
+  const role = workspace?.currentRole || 'admin';
   const [search, setSearch] = useState('');
   const [activeOnly, setActiveOnly] = useState(false);
   const [sortByBilling, setSortByBilling] = useState(false);
   const rows = [...customers]
-    .filter((customer) => `${customer.name} ${customer.contact} ${customer.status}`.toLowerCase().includes(search.toLowerCase()) && (!activeOnly || customer.status === 'active'))
+    .filter((customer) => scopeByRole(role, 'customer') && (role === 'admin' || role === 'finance' ? true : customer.owner === 'Alex' || (customer.team || []).includes('Alex')))
+    .filter((customer) => `${customer.name} ${customer.companyName} ${customer.contactPerson || customer.contact} ${customer.status} ${customer.owner} ${(customer.tags || []).join(' ')}`.toLowerCase().includes(search.toLowerCase()) && (!activeOnly || customer.status === 'active'))
     .sort((left, right) => (sortByBilling ? right.total.localeCompare(left.total) : left.name.localeCompare(right.name)));
 
   return (
     <>
       <PageShell title="Customers" subtitle="Customer records keep lead origin, communication, tasks, invoices, files, and lifecycle together." action={<Button variant="primary" href="/customers/new"><Icon d={ICONS.plus} size={14} />New Customer</Button>}>
         <SearchStrip placeholder="Search customers by company, contact, status..." search={search} onSearch={setSearch} filterLabel={activeOnly ? 'Active' : 'All'} sortLabel={sortByBilling ? 'Billing' : 'Name'} onFilter={() => setActiveOnly((current) => !current)} onSort={() => setSortByBilling((current) => !current)} />
-        <TableCard title="Customer Accounts" headers={[{ label: 'Customer', w: '1fr' }, { label: 'Status', w: '100px' }, { label: 'Total Billing', w: '130px' }, { label: 'Invoices', w: '120px' }, { label: 'Latest Activity', w: '180px' }]} rows={rows.map((customer) => <ClickableRow key={customer.id} href={`/customers/${customer.id}`} columns={[{ w: '1fr', node: <PrimaryText title={customer.name} sub={`${customer.contact} · ${customer.id}`} /> }, { w: '100px', node: <Badge color={badgeColor(customer.status)}>{customer.status}</Badge> }, { w: '130px', node: <div style={{ fontSize: 13, color: 'var(--text-2)', fontWeight: 700 }}>{customer.total}</div> }, { w: '120px', node: <Badge color={customer.invoices.includes('late') ? 'red' : customer.invoices.includes('unpaid') ? 'yellow' : 'green'}>{customer.invoices}</Badge> }, { w: '180px', node: <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{customer.activity}</div> }]} />)} />
+        {rows.length ? <TableCard title="Customer Accounts" headers={[{ label: 'Customer', w: '1fr' }, { label: 'Owner', w: '90px' }, { label: 'Health', w: '110px' }, { label: 'Stage', w: '130px' }, { label: 'Total Billing', w: '130px' }, { label: 'Latest Activity', w: '180px' }]} rows={rows.map((customer) => <ClickableRow key={customer.id} href={`/customers/${customer.id}`} columns={[{ w: '1fr', node: <PrimaryText title={customer.companyName || customer.name} sub={`${customer.contactPerson || customer.contact} · ${customer.id} · ${customer.industry}`} /> }, { w: '90px', node: <Avatar name={customer.owner} size={24} /> }, { w: '110px', node: <Badge color={customer.health === 'at risk' ? 'red' : customer.health === 'healthy' ? 'green' : 'yellow'}>{customer.health}</Badge> }, { w: '130px', node: <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{customer.stage}</div> }, { w: '130px', node: <div style={{ fontSize: 13, color: 'var(--text-2)', fontWeight: 700 }}>{customer.total}</div> }, { w: '180px', node: <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{customer.activity}</div> }]} />)} /> : <SmartEmptyState title="Create your first customer" detail="Customers become the anchor for invoices, files, communication, tasks, and account health automation." actionLabel="New Customer" actionHref="/customers/new" secondaryLabel="Open Leads" secondaryHref="/leads" />}
       </PageShell>
     </>
   );
@@ -837,31 +1358,83 @@ export function CustomersPage() {
 
 export function CommunicationPage() {
   const router = useRouter();
-  const { communications } = useBuzzStore();
+  const { communications, workspace } = useBuzzStore();
+  const role = workspace?.currentRole || 'admin';
+  const [mode, setMode] = useState('all');
+  const rows = communications.filter((item) => {
+    if (!scopeByRole(role, 'communication')) return false;
+    if (role !== 'admin' && role !== 'finance' && item.owner !== 'Alex' && !item.internal) return false;
+    if (mode === 'internal') return item.internal;
+    if (mode === 'external') return !item.internal;
+    if (mode === 'queued') return item.status === 'queued';
+    return true;
+  });
   return (
     <>
-      <PageShell title="Communication" subtitle="Manual emails, calls, meetings, notes, comments, and follow-ups stay attached to records." action={<Button variant="primary" href="/communication/new"><Icon d={ICONS.plus} size={14} />New Note</Button>}><TableCard title="Timeline" headers={[{ label: 'Communication', w: '1fr' }, { label: 'Type', w: '120px' }, { label: 'Linked To', w: '160px' }, { label: 'Owner', w: '90px' }]} rows={communications.map((item) => <ClickableRow key={item.id} href={`/communication/${item.id}`} columns={[{ w: '1fr', node: <PrimaryText title={item.title} sub={item.detail} /> }, { w: '120px', node: <Badge color="cyan">{item.type}</Badge> }, { w: '160px', node: <button type="button" onClick={(event) => { event.stopPropagation(); const path = item.linked?.startsWith('Lead') ? `/leads/${item.linked.replace('Lead ', '')}` : item.linked?.startsWith('Customer') ? `/customers/${item.linked.replace('Customer ', '')}` : item.linked?.startsWith('Task') ? `/tasks/${item.linked.replace('Task ', '')}` : `/communication/${item.id}`; router.push(path); }} style={{ background: 'transparent', border: 'none', padding: 0, fontSize: 12, color: 'var(--text-2)', fontWeight: 700, textAlign: 'left' }}>{item.linked}</button> }, { w: '90px', node: <button type="button" onClick={(event) => { event.stopPropagation(); }} style={{ background: 'transparent', border: 'none', padding: 0 }}><Avatar name={item.owner} size={24} /></button> }]} />)} /></PageShell>
+      <PageShell title="Communication" subtitle="Email composer, templates, scheduling, internal notes, threads, status, attachments, and record links live in one center." action={<Button variant="primary" href="/communication/new"><Icon d={ICONS.plus} size={14} />Compose</Button>}>
+        <Card style={{ padding: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {[
+            ['all', 'All'],
+            ['internal', 'Internal'],
+            ['external', 'External'],
+            ['queued', 'Queued'],
+          ].map(([key, label]) => <Button key={key} size="sm" variant={mode === key ? 'primary' : 'default'} onClick={() => setMode(key)}>{label}</Button>)}
+        </Card>
+        {rows.length ? <TableCard title="Communication Center" headers={[{ label: 'Message', w: '1fr' }, { label: 'Status', w: '90px' }, { label: 'Type', w: '110px' }, { label: 'Thread', w: '100px' }, { label: 'Linked To', w: '160px' }, { label: 'Owner', w: '90px' }]} rows={rows.map((item) => <ClickableRow key={item.id} href={`/communication/${item.id}`} columns={[{ w: '1fr', node: <PrimaryText title={item.title} sub={item.internal ? `Internal · ${item.detail}` : `${item.template} · ${item.detail}`} /> }, { w: '90px', node: <Badge color={item.status === 'sent' ? 'green' : item.status === 'failed' ? 'red' : item.status === 'queued' ? 'yellow' : 'gray'}>{item.status}</Badge> }, { w: '110px', node: <Badge color="cyan">{item.type}</Badge> }, { w: '100px', node: <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{item.threadId}</div> }, { w: '160px', node: <button type="button" onClick={(event) => { event.stopPropagation(); router.push(recordPathFromCommunication(item)); }} style={{ background: 'transparent', border: 'none', padding: 0, fontSize: 12, color: 'var(--text-2)', fontWeight: 700, textAlign: 'left' }}>{item.related?.label || item.linked}</button> }, { w: '90px', node: <Avatar name={item.owner} size={24} /> }]} />)} /> : <SmartEmptyState title="Connect SMTP to start email outreach" detail="Compose your first outbound message, save templates, and start building threads tied to leads and customers." actionLabel="Compose Message" actionHref="/communication/new" secondaryLabel="Open Customers" secondaryHref="/customers" />}
+      </PageShell>
     </>
   );
 }
 
 export function TasksPage() {
-  const { tasks } = useBuzzStore();
+  const router = useRouter();
+  const { tasks, workspace } = useBuzzStore();
+  const role = workspace?.currentRole || 'admin';
+  const [view, setView] = useState('all');
+  const todoCount = tasks.filter((task) => task.status === 'todo').length;
+  const blockedCount = tasks.filter((task) => task.status === 'blocked').length;
+  const highPriorityCount = tasks.filter((task) => task.priority === 'high').length;
+  const visibleTasks = tasks.filter((task) => {
+    if (!scopeByRole(role, 'task')) return false;
+    if (role === 'finance' && task.related?.type !== 'invoice' && task.owner !== 'Noah') return false;
+    if (role !== 'admin' && role !== 'finance' && task.owner !== 'Alex' && !(task.watchers || []).includes('Alex') && !(task.collaborators || []).includes('Alex')) return false;
+    if (view === 'my') return task.owner === 'Alex';
+    if (view === 'today') return isTodayDate(task.dueDate);
+    if (view === 'overdue') return isOverdueTask(task);
+    if (view === 'assigned') return task.assignedBy === 'Alex';
+    if (view === 'blocked') return task.status === 'blocked';
+    return true;
+  });
   return (
     <>
-      <PageShell title="Tasks" subtitle="Tasks can be linked to leads, customers, entries, invoices, and communication records." action={<Button variant="primary" href="/tasks/new"><Icon d={ICONS.plus} size={14} />New Task</Button>}><TableCard title="Task Queue" headers={[{ label: 'Task', w: '1fr' }, { label: 'Status', w: '100px' }, { label: 'Priority', w: '95px' }, { label: 'Owner', w: '80px' }, { label: 'Due', w: '130px' }]} rows={tasks.map((task) => <ClickableRow key={task.id} href={`/tasks/${task.id}`} columns={[{ w: '1fr', node: <PrimaryText title={task.title} sub={`${task.id} · linked to ${task.link}`} /> }, { w: '100px', node: <Badge color={badgeColor(task.status)}>{task.status}</Badge> }, { w: '95px', node: <Badge color={badgeColor(task.priority)}>{task.priority}</Badge> }, { w: '80px', node: <Avatar name={task.owner} size={24} /> }, { w: '130px', node: <div style={{ fontSize: 12, color: task.due === 'Late' ? '#F87171' : 'var(--text-2)', fontWeight: 700 }}>{task.due}</div> }]} />)} /></PageShell>
+      <PageShell title="Tasks" subtitle="Tasks can be linked to leads, customers, entries, invoices, and communication records." action={<Button variant="primary" href="/tasks/new"><Icon d={ICONS.plus} size={14} />New Task</Button>}>
+        <StatBand items={[{ label: 'Todo', value: String(todoCount), note: 'queued', color: 'gray' }, { label: 'High Priority', value: String(highPriorityCount), note: 'urgent', color: 'red' }, { label: 'Blocked', value: String(blockedCount), note: 'needs input', color: 'yellow' }]} />
+        <Card style={{ padding: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {[
+            ['all', 'All tasks'],
+            ['my', 'My tasks'],
+            ['today', 'Due today'],
+            ['overdue', 'Overdue'],
+            ['assigned', 'Assigned by me'],
+            ['blocked', 'Blocked tasks'],
+          ].map(([key, label]) => <Button key={key} size="sm" variant={view === key ? 'primary' : 'default'} onClick={() => setView(key)}>{label}</Button>)}
+        </Card>
+        {visibleTasks.length ? <TableCard title="Task Queue" headers={[{ label: 'Task', w: '1fr' }, { label: 'Type', w: '120px' }, { label: 'Status', w: '110px' }, { label: 'Owner', w: '90px' }, { label: 'Due', w: '150px' }]} rows={visibleTasks.map((task) => <ClickableRow key={task.id} href={`/tasks/${task.id}`} columns={[{ w: '1fr', node: <PrimaryText title={task.title} sub={`${task.id} · ${task.related?.type || 'record'} · ${task.related?.label || task.link} · assigned by ${task.assignedBy || 'Alex'}`} /> }, { w: '120px', node: <Badge color="cyan">{task.type}</Badge> }, { w: '110px', node: <Badge color={badgeColor(task.status)}>{task.status}</Badge> }, { w: '90px', node: <Avatar name={task.owner} size={24} /> }, { w: '150px', node: <button type="button" onClick={(event) => { event.stopPropagation(); router.push(recordPathFromTask(task)); }} style={{ background: 'transparent', border: 'none', padding: 0, fontSize: 12, color: task.due === 'Late' ? '#F87171' : 'var(--text-2)', fontWeight: 700, textAlign: 'left' }}>{task.due}</button> }]} />)} /> : <SmartEmptyState title="Assign your first follow-up task" detail="Tasks become more useful when every lead, customer, invoice, and file has a clear next action and owner." actionLabel="Create Task" actionHref="/tasks/new" secondaryLabel="Open Leads" secondaryHref="/leads" />}
+      </PageShell>
     </>
   );
 }
 
 export function InvoicesPage() {
   const router = useRouter();
-  const { customers, invoices } = useBuzzStore();
-  const unpaidInvoices = invoices.filter((invoice) => invoice.status !== 'paid');
-  const lateInvoices = invoices.filter((invoice) => invoice.status === 'late');
+  const { customers, invoices, workspace } = useBuzzStore();
+  const role = workspace?.currentRole || 'admin';
+  const visibleInvoices = invoices.filter((invoice) => scopeByRole(role, 'invoice'));
+  const unpaidInvoices = visibleInvoices.filter((invoice) => invoice.status !== 'paid');
+  const lateInvoices = visibleInvoices.filter((invoice) => invoice.status === 'late');
   return (
     <>
-      <PageShell title="Invoices" subtitle="Create, send, mark paid, log partial payments, and keep every invoice tied to a customer." action={<Button variant="primary" href="/invoices/new"><Icon d={ICONS.plus} size={14} />New Invoice</Button>}><StatBand items={[{ label: 'Unpaid', value: String(unpaidInvoices.length), note: 'open invoices', color: 'yellow' }, { label: 'Late', value: String(lateInvoices.length), note: 'overdue', color: 'red' }, { label: 'Paid', value: String(invoices.filter((invoice) => invoice.status === 'paid').length), note: 'settled', color: 'green' }]} /><TableCard title="Invoice Register" headers={[{ label: 'Invoice', w: '1fr' }, { label: 'Customer', w: '170px' }, { label: 'Status', w: '100px' }, { label: 'Due', w: '110px' }, { label: 'Paid', w: '110px' }]} rows={invoices.map((invoice) => { const customer = customers.find((item) => item.name === invoice.customer); return <ClickableRow key={invoice.id} href={`/invoices/${invoice.id}`} columns={[{ w: '1fr', node: <PrimaryText title={`${invoice.id} · ${invoice.amount}`} sub="Number generated internally" /> }, { w: '170px', node: <button type="button" onClick={(event) => { event.stopPropagation(); router.push(customer ? `/customers/${customer.id}` : '/customers'); }} style={{ background: 'transparent', border: 'none', padding: 0, fontSize: 12, color: 'var(--text-2)', fontWeight: 700, textAlign: 'left' }}>{invoice.customer}</button> }, { w: '100px', node: <Badge color={badgeColor(invoice.status)}>{invoice.status}</Badge> }, { w: '110px', node: <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{invoice.due}</div> }, { w: '110px', node: <div style={{ fontSize: 12, color: 'var(--text-2)', fontWeight: 700 }}>{invoice.paid}</div> }]} />; })} /></PageShell>
+      <PageShell title="Invoices" subtitle="Create, send, mark paid, log partial payments, and keep every invoice tied to a customer." action={<Button variant="primary" href="/invoices/new"><Icon d={ICONS.plus} size={14} />New Invoice</Button>}><StatBand items={[{ label: 'Unpaid', value: String(unpaidInvoices.length), note: 'open invoices', color: 'yellow' }, { label: 'Late', value: String(lateInvoices.length), note: 'overdue', color: 'red' }, { label: 'Paid', value: String(visibleInvoices.filter((invoice) => invoice.status === 'paid').length), note: 'settled', color: 'green' }]} /><TableCard title="Invoice Register" headers={[{ label: 'Invoice', w: '1fr' }, { label: 'Customer', w: '170px' }, { label: 'Status', w: '100px' }, { label: 'Due', w: '110px' }, { label: 'Paid', w: '110px' }]} rows={visibleInvoices.map((invoice) => { const customer = customers.find((item) => item.name === invoice.customer); return <ClickableRow key={invoice.id} href={`/invoices/${invoice.id}`} columns={[{ w: '1fr', node: <PrimaryText title={`${invoice.id} · ${invoice.amount}`} sub="Number generated internally" /> }, { w: '170px', node: <button type="button" onClick={(event) => { event.stopPropagation(); router.push(customer ? `/customers/${customer.id}` : '/customers'); }} style={{ background: 'transparent', border: 'none', padding: 0, fontSize: 12, color: 'var(--text-2)', fontWeight: 700, textAlign: 'left' }}>{invoice.customer}</button> }, { w: '100px', node: <Badge color={badgeColor(invoice.status)}>{invoice.status}</Badge> }, { w: '110px', node: <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{invoice.due}</div> }, { w: '110px', node: <div style={{ fontSize: 12, color: 'var(--text-2)', fontWeight: 700 }}>{invoice.paid}</div> }]} />; })} /></PageShell>
     </>
   );
 }
@@ -889,7 +1462,7 @@ export function ActivityPage() {
 }
 
 export function SettingsPage() {
-  const { reset } = useBuzzStore();
+  const { reset, setWorkspaceRole, workspace } = useBuzzStore();
   const [confirmReset, setConfirmReset] = useState(false);
   const [toast, flash] = useFlashMessage();
   return (
@@ -897,7 +1470,7 @@ export function SettingsPage() {
       <PageShell title="Settings" subtitle="Roles, permissions, validation rules, statuses, form publishing, and internal system controls." action={<div style={{ display: 'flex', gap: 8 }}><Button onClick={() => setConfirmReset(true)}><Icon d={ICONS.undo} size={14} />Reset Data</Button><Button variant="primary" onClick={() => flash('Settings saved.') }><Icon d={ICONS.check} size={14} />Save Changes</Button></div>}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         {[
-          ['Roles & Permissions', 'Admin sees everything. Staff only sees assigned leads, relevant customers, notes, tasks, and allowed entries.', 'admin · staff'],
+          ['Roles & Permissions', 'Admin sees everything. Sales handles leads and outbound. Ops handles tasks and delivery. Finance handles invoices. Support handles follow-up and notes.', 'admin · sales · ops · finance · support'],
           ['Validation Rules', 'Reject empty submissions, block unpublished form entries, require valid structures before publishing.', 'always on'],
           ['Lead Qualification', 'Budget, urgency, contactability, duplicates, spam rate, and product interest can set score and priority.', 'rule engine'],
           ['Status Controls', 'Lead, customer, invoice, and task statuses use fixed valid transitions with activity logging.', 'locked'],
@@ -909,6 +1482,22 @@ export function SettingsPage() {
           </Card>
         ))}
         </div>
+        <Card style={{ padding: 18, marginTop: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 14, marginBottom: 16 }}>
+            <SelectField label="Active Role Filter" value={workspace?.currentRole || 'admin'} onChange={(event) => setWorkspaceRole(event.target.value)} options={ROLE_OPTIONS} />
+            <div style={{ alignSelf: 'end', fontSize: 12, color: 'var(--text-2)' }}>Use this to simulate what each team role sees across customers, communication, tasks, and invoices.</div>
+          </div>
+          <Label style={{ marginBottom: 12 }}>Team Layer</Label>
+          <div style={{ display: 'grid', gap: 10 }}>
+            {TEAM_MEMBERS.map((member) => (
+              <div key={member.name} style={{ display: 'grid', gridTemplateColumns: '180px 120px 1fr', gap: 12, alignItems: 'center', paddingBottom: 10, borderBottom: `1px solid ${UI.border}` }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><Avatar name={member.name} size={24} /><span style={{ fontSize: 12, fontWeight: 700 }}>{member.name}</span></div>
+                <Badge color="purple">{member.role}</Badge>
+                <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{member.scope}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
       </PageShell>
       {confirmReset ? <Modal title="Reset Workspace Data" subtitle="This resets forms, entries, leads, customers, tasks, invoices, files, communication, and activity back to demo seed data in this browser only." onClose={() => setConfirmReset(false)} actions={<><Button onClick={() => setConfirmReset(false)}>Cancel</Button><Button variant="danger" onClick={() => { reset(); setConfirmReset(false); flash('Workspace reset to seed data.'); }}>Reset Data</Button></>}>
         <div style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.7 }}>The reset does not affect code or any other browser. It only clears the current local BuzzFlow workspace state.</div>
@@ -919,7 +1508,7 @@ export function SettingsPage() {
 }
 
 export function FormBuilderPage({ id }) {
-  const { forms, updateForm, setBuilderSession, setFormStatus } = useBuzzStore();
+  const { forms, updateForm, setBuilderSession, setFormStatus, defaultNotificationEmail } = useBuzzStore();
   const { requestNavigation } = useAppChrome();
   const savedForm = forms.find((item) => item.id === id) || forms[0];
   const normalizedSavedFields = useMemo(() => normalizeBuilderFields(savedForm?.field_schema), [savedForm?.field_schema]);
@@ -932,6 +1521,16 @@ export function FormBuilderPage({ id }) {
   const [fields, setFields] = useState(normalizedSavedFields);
   const [primaryColor, setPrimaryColor] = useState(savedColor);
   const [selectedFieldId, setSelectedFieldId] = useState(normalizedSavedFields.find((field) => field.type !== 'section')?.id || normalizedSavedFields[0]?.id || null);
+  const [description, setDescription] = useState(savedForm?.description || '');
+  const [submitLabel, setSubmitLabel] = useState(savedForm?.submitLabel || 'Submit');
+  const [successMessage, setSuccessMessage] = useState(savedForm?.successMessage || 'Thanks. We received your submission and will follow up shortly.');
+  const [notifyEmail, setNotifyEmail] = useState(savedForm?.notifyEmail || defaultNotificationEmail);
+  const [ownerRotation, setOwnerRotation] = useState((savedForm?.owners || ['Alex', 'Sarah', 'Mika']).join(', '));
+  const [automation, setAutomation] = useState(savedForm?.automation || {});
+  const [multiStepEnabled, setMultiStepEnabled] = useState(Boolean(savedForm?.multiStepEnabled));
+  const [dragFieldId, setDragFieldId] = useState(null);
+  const [autosaveState, setAutosaveState] = useState('Saved');
+  const autosaveInitializedRef = useRef(false);
   const [history, setHistory] = useState([]);
 
   const tabs = useMemo(() => [{ id: 'design', label: 'Design', icon: ICONS.palette }, { id: 'automation', label: 'Automation', icon: ICONS.brain }, { id: 'embed', label: 'Embed', icon: ICONS.code }], []);
@@ -939,27 +1538,89 @@ export function FormBuilderPage({ id }) {
   const published = savedForm?.status === 'active';
   const selectedField = fields.find((field) => field.id === selectedFieldId) || null;
   const sectionLabel = fields.find((field) => field.type === 'section')?.label || 'Contact Details';
+  const parsedOwners = useMemo(() => ownerRotation.split(',').map((item) => item.trim()).filter(Boolean), [ownerRotation]);
+  const builderDirty = title !== savedForm?.name
+    || primaryColor !== savedColor
+    || JSON.stringify(fields) !== JSON.stringify(normalizedSavedFields)
+    || submitLabel !== (savedForm?.submitLabel || 'Submit')
+    || successMessage !== (savedForm?.successMessage || 'Thanks. We received your submission and will follow up shortly.')
+    || description !== (savedForm?.description || '')
+    || notifyEmail !== (savedForm?.notifyEmail || defaultNotificationEmail)
+    || ownerRotation !== (savedForm?.owners || ['Alex', 'Sarah', 'Mika']).join(', ')
+    || multiStepEnabled !== Boolean(savedForm?.multiStepEnabled)
+    || JSON.stringify(automation || {}) !== JSON.stringify(savedForm?.automation || {});
 
   useEffect(() => {
     setTitle(savedForm?.name || 'Contact Inquiry');
     setFields(normalizedSavedFields);
     setPrimaryColor(savedColor);
     setSelectedFieldId(normalizedSavedFields.find((field) => field.type !== 'section')?.id || normalizedSavedFields[0]?.id || null);
+    setDescription(savedForm?.description || '');
+    setSubmitLabel(savedForm?.submitLabel || 'Submit');
+    setSuccessMessage(savedForm?.successMessage || 'Thanks. We received your submission and will follow up shortly.');
+    setNotifyEmail(savedForm?.notifyEmail || defaultNotificationEmail);
+    setOwnerRotation((savedForm?.owners || ['Alex', 'Sarah', 'Mika']).join(', '));
+    setAutomation(savedForm?.automation || {});
+    setMultiStepEnabled(Boolean(savedForm?.multiStepEnabled));
+    setAutosaveState('Saved');
+    autosaveInitializedRef.current = false;
     setHistory([]);
-  }, [normalizedSavedFields, savedColor, savedForm?.id, savedForm?.name]);
+  }, [defaultNotificationEmail, savedForm?.id]);
 
   useEffect(() => {
     if (!savedForm?.id) return;
-    const dirty = title !== savedForm.name || primaryColor !== savedColor || JSON.stringify(fields) !== JSON.stringify(normalizedSavedFields);
     setBuilderSession({
       formId: savedForm.id,
       title,
       fields,
       color: primaryColor,
       published,
-      dirty,
+      dirty: builderDirty,
+      description,
+      submitLabel,
+      successMessage,
+      notifyEmail,
+      owners: parsedOwners,
+      defaultOwner: parsedOwners[0] || 'Alex',
+      automation,
+      multiStepEnabled,
     });
-  }, [fields, normalizedSavedFields, primaryColor, published, savedColor, savedForm, setBuilderSession, title]);
+  }, [automation, builderDirty, description, fields, multiStepEnabled, notifyEmail, parsedOwners, primaryColor, published, savedForm, setBuilderSession, submitLabel, successMessage, title]);
+
+  useEffect(() => {
+    if (!savedForm?.id) return;
+    if (!autosaveInitializedRef.current) {
+      autosaveInitializedRef.current = true;
+      return;
+    }
+    if (!builderDirty) {
+      setAutosaveState('Saved');
+      return;
+    }
+    setAutosaveState('Saving...');
+    const timer = window.setTimeout(() => {
+      updateForm({
+        id: savedForm.id,
+        title,
+        fields,
+        published,
+        color: primaryColor,
+        automation,
+        submitLabel,
+        successMessage,
+        description,
+        notifyEmail,
+        owners: parsedOwners,
+        defaultOwner: parsedOwners[0] || 'Alex',
+        multiStepEnabled,
+      });
+      if (savedForm.status && !['active', 'draft'].includes(savedForm.status)) {
+        setFormStatus(savedForm.id, savedForm.status);
+      }
+      setAutosaveState('Saved');
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [automation, builderDirty, description, fields, multiStepEnabled, notifyEmail, parsedOwners, primaryColor, published, savedForm?.id, savedForm?.status, submitLabel, successMessage, title, updateForm, setFormStatus]);
 
   const rememberState = (nextFields, nextTitle = title, nextColor = primaryColor, nextSelectedId = selectedFieldId) => {
     setHistory((current) => [...current.slice(-29), { title, fields, primaryColor, selectedFieldId }]);
@@ -971,7 +1632,7 @@ export function FormBuilderPage({ id }) {
 
   const saveDraft = () => {
     if (!savedForm?.id) return;
-    updateForm({ id: savedForm.id, title, fields, published, color: primaryColor });
+    updateForm({ id: savedForm.id, title, fields, published, color: primaryColor, automation, submitLabel, successMessage, description, notifyEmail, owners: parsedOwners, defaultOwner: parsedOwners[0] || 'Alex', multiStepEnabled });
     if (savedForm.status && !['active', 'draft'].includes(savedForm.status)) {
       setFormStatus(savedForm.id, savedForm.status);
     }
@@ -981,10 +1642,10 @@ export function FormBuilderPage({ id }) {
   const changeStatus = (status) => {
     if (!savedForm?.id) return;
     if (status === 'active') {
-      updateForm({ id: savedForm.id, title, fields, published: true, color: primaryColor });
+      updateForm({ id: savedForm.id, title, fields, published: true, color: primaryColor, automation, submitLabel, successMessage, description, notifyEmail, owners: parsedOwners, defaultOwner: parsedOwners[0] || 'Alex', multiStepEnabled });
       flash('Form published.');
     } else {
-      updateForm({ id: savedForm.id, title, fields, published: false, color: primaryColor });
+      updateForm({ id: savedForm.id, title, fields, published: false, color: primaryColor, automation, submitLabel, successMessage, description, notifyEmail, owners: parsedOwners, defaultOwner: parsedOwners[0] || 'Alex', multiStepEnabled });
       setFormStatus(savedForm.id, status);
       flash(status === 'paused' ? 'Form paused.' : status === 'archived' ? 'Form archived.' : 'Form unpublished.');
     }
@@ -1040,6 +1701,29 @@ export function FormBuilderPage({ id }) {
     flash('Field removed.');
   };
 
+  const moveField = (fieldId, direction) => {
+    const index = fields.findIndex((field) => field.id === fieldId);
+    const targetIndex = index + direction;
+    if (index < 0 || targetIndex < 0 || targetIndex >= fields.length) return;
+    const nextFields = [...fields];
+    const [moved] = nextFields.splice(index, 1);
+    nextFields.splice(targetIndex, 0, moved);
+    rememberState(nextFields, title, primaryColor, fieldId);
+  };
+
+  const handleDropField = (targetFieldId) => {
+    if (!dragFieldId || dragFieldId === targetFieldId) return;
+    const fromIndex = fields.findIndex((field) => field.id === dragFieldId);
+    const toIndex = fields.findIndex((field) => field.id === targetFieldId);
+    if (fromIndex < 0 || toIndex < 0) return;
+    const nextFields = [...fields];
+    const [moved] = nextFields.splice(fromIndex, 1);
+    nextFields.splice(toIndex, 0, moved);
+    rememberState(nextFields, title, primaryColor, dragFieldId);
+    setDragFieldId(null);
+    flash('Field moved.');
+  };
+
   return (
     <div className="buzz-fadein buzz-builder-layout" style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
       <div className="buzz-scroll buzz-builder-sidebar" style={{ width: 192, borderRight: `1px solid ${UI.border}`, padding: '16px 10px', flexShrink: 0, background: UI.panelSoft }}>
@@ -1060,6 +1744,7 @@ export function FormBuilderPage({ id }) {
             <button type="button" onClick={() => setShowStatusMenu((current) => !current)} style={{ background: 'transparent', border: 'none', padding: 0 }}>
               <Badge color={savedForm?.status === 'active' ? 'green' : savedForm?.status === 'paused' ? 'yellow' : savedForm?.status === 'archived' ? 'red' : 'gray'}>{savedForm?.status || 'draft'}</Badge>
             </button>
+            <Badge color={autosaveState === 'Saving...' ? 'yellow' : 'green'}>{autosaveState}</Badge>
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
             <Button size="sm" variant="ghost" onClick={handleUndo}><Icon d={ICONS.undo} size={13} />Undo</Button>
@@ -1079,18 +1764,26 @@ export function FormBuilderPage({ id }) {
           <div style={{ padding: '12px 18px', borderBottom: `1px solid ${UI.border}`, display: 'flex', alignItems: 'center', gap: 10, background: hexToRgba(primaryColor, 0.08) }}>
             <div style={{ width: 6, height: 6, borderRadius: '50%', background: primaryColor, boxShadow: `0 0 8px ${primaryColor}` }} />
             <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-2)' }}>Section: {sectionLabel}</span>
+            {multiStepEnabled ? <Badge color="purple">Multi-step</Badge> : null}
             <button type="button" onClick={addSection} style={{ marginLeft: 'auto', fontSize: 11, color: primaryColor, background: 'transparent', border: 'none', fontWeight: 700 }}>+ Add Section</button>
           </div>
 
           <div style={{ padding: '18px 20px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, overflow: 'auto', flex: 1 }}>
             {fields.map((field) => (
               field.type === 'section' ? (
-                <button type="button" key={field.id} onClick={() => setSelectedFieldId(field.id)} style={{ gridColumn: 'span 2', padding: '12px 14px', borderRadius: 9, border: `1px dashed ${selectedFieldId === field.id ? primaryColor : UI.borderStrong}`, background: selectedFieldId === field.id ? hexToRgba(primaryColor, 0.06) : UI.panelSoft, textAlign: 'left' }}>
-                  <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text)' }}>{field.label}</div>
+                <button type="button" draggable key={field.id} onDragStart={() => setDragFieldId(field.id)} onDragOver={(event) => event.preventDefault()} onDrop={() => handleDropField(field.id)} onClick={() => setSelectedFieldId(field.id)} style={{ gridColumn: 'span 2', padding: '12px 14px', borderRadius: 9, border: `1px dashed ${selectedFieldId === field.id ? primaryColor : UI.borderStrong}`, background: selectedFieldId === field.id ? hexToRgba(primaryColor, 0.06) : UI.panelSoft, textAlign: 'left' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Icon d={ICONS.drag} size={12} color="var(--text-3)" />
+                    <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text)' }}>{field.label}</div>
+                  </div>
                 </button>
               ) : (
-                <button type="button" key={field.id} onClick={() => setSelectedFieldId(field.id)} style={{ gridColumn: field.half ? 'span 1' : 'span 2', padding: '10px 12px', borderRadius: 9, border: `1px solid ${selectedFieldId === field.id ? primaryColor : UI.border}`, background: selectedFieldId === field.id ? hexToRgba(primaryColor, 0.04) : UI.panel, textAlign: 'left' }}>
-                  <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>{field.label}{field.required ? <span style={{ color: primaryColor, marginLeft: 3 }}>*</span> : null}</label>
+                <button type="button" draggable key={field.id} onDragStart={() => setDragFieldId(field.id)} onDragOver={(event) => event.preventDefault()} onDrop={() => handleDropField(field.id)} onClick={() => setSelectedFieldId(field.id)} style={{ gridColumn: field.half ? 'span 1' : 'span 2', padding: '10px 12px', borderRadius: 9, border: `1px solid ${selectedFieldId === field.id ? primaryColor : UI.border}`, background: selectedFieldId === field.id ? hexToRgba(primaryColor, 0.04) : UI.panel, textAlign: 'left' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                    <Icon d={ICONS.drag} size={12} color="var(--text-3)" />
+                    <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)' }}>{field.label}{field.required ? <span style={{ color: primaryColor, marginLeft: 3 }}>*</span> : null}</label>
+                    {field.showWhen?.fieldId ? <Badge color="cyan">Conditional</Badge> : null}
+                  </div>
                   {field.type === 'dropdown' ? <div style={{ height: 32, background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 7, width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 10px', color: 'var(--text-3)', fontSize: 12 }}><span>{field.placeholder || 'Select an option'}</span><Icon d={ICONS.chevronDown} size={12} color="var(--text-3)" /></div> : null}
                   {field.type === 'multiselect' ? <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>{extractFieldOptions(field).map((option) => <span key={option} style={{ padding: '5px 8px', borderRadius: 999, background: UI.input, border: `1px solid ${UI.inputBorder}`, fontSize: 11, color: 'var(--text-2)' }}>{option}</span>)}</div> : null}
                   {field.type === 'checkbox' ? <div style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 32, color: 'var(--text-2)', fontSize: 12 }}><div style={{ width: 16, height: 16, borderRadius: 5, border: `1px solid ${UI.inputBorder}`, background: UI.input }} />{extractFieldOptions(field)[0] || 'Checkbox option'}</div> : null}
@@ -1105,7 +1798,7 @@ export function FormBuilderPage({ id }) {
           </div>
 
           <div style={{ padding: '0 20px 18px' }}>
-            <button type="button" onClick={() => flash('Submit button selected for configuration.')} style={{ height: 40, background: `linear-gradient(135deg, ${primaryColor}, ${hexToRgba(primaryColor, 0.72)})`, borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: '#fff', maxWidth: 180, boxShadow: `0 4px 20px ${hexToRgba(primaryColor, 0.35)}`, border: 'none', width: '100%' }}>Submit →</button>
+            <button type="button" onClick={() => flash('Submit button selected for configuration.')} style={{ height: 40, background: `linear-gradient(135deg, ${primaryColor}, ${hexToRgba(primaryColor, 0.72)})`, borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: '#fff', maxWidth: 180, boxShadow: `0 4px 20px ${hexToRgba(primaryColor, 0.35)}`, border: 'none', width: '100%' }}>{submitLabel || 'Submit'} →</button>
           </div>
         </div>
 
@@ -1128,6 +1821,28 @@ export function FormBuilderPage({ id }) {
                 <button key={color} type="button" onClick={() => rememberState(fields, title, color, selectedFieldId)} style={{ width: 24, height: 24, borderRadius: 7, background: color, border: `2px solid ${primaryColor === color ? '#fff' : 'transparent'}`, boxShadow: primaryColor === color ? `0 0 0 2px ${color}` : 'none' }} />
               ))}
             </div>
+            <Label>Form Copy</Label>
+            <Card style={{ padding: 14, display: 'grid', gap: 10 }}>
+              <div>
+                <Label style={{ marginBottom: 6 }}>Intro text</Label>
+                <textarea value={description} onChange={(event) => setDescription(event.target.value)} style={{ width: '100%', minHeight: 72, padding: '10px 12px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 9, color: 'var(--text)', fontSize: 12, outline: 'none', resize: 'vertical', lineHeight: 1.6 }} />
+              </div>
+              <div>
+                <Label style={{ marginBottom: 6 }}>Submit button</Label>
+                <input value={submitLabel} onChange={(event) => setSubmitLabel(event.target.value)} style={{ width: '100%', padding: '10px 12px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 9, color: 'var(--text)', fontSize: 12, outline: 'none' }} />
+              </div>
+              <div>
+                <Label style={{ marginBottom: 6 }}>Success state</Label>
+                <textarea value={successMessage} onChange={(event) => setSuccessMessage(event.target.value)} style={{ width: '100%', minHeight: 72, padding: '10px 12px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 9, color: 'var(--text)', fontSize: 12, outline: 'none', resize: 'vertical', lineHeight: 1.6 }} />
+              </div>
+            </Card>
+            <Label>Flow</Label>
+            <Card style={{ padding: 14, display: 'grid', gap: 10 }}>
+              <button type="button" onClick={() => setMultiStepEnabled((current) => !current)} style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: `1px solid ${multiStepEnabled ? primaryColor : UI.border}`, background: multiStepEnabled ? hexToRgba(primaryColor, 0.08) : UI.panel, color: 'var(--text-2)', fontSize: 12, fontWeight: 700, textAlign: 'left' }}>
+                Multi-step forms: {multiStepEnabled ? 'On' : 'Off'}
+              </button>
+              <div style={{ fontSize: 12, color: 'var(--text-3)', lineHeight: 1.7 }}>When enabled, each section becomes a step in preview and public embed. Use sections to control step breaks.</div>
+            </Card>
             <Label>Selected Field</Label>
             {selectedField ? (
               <Card style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -1142,6 +1857,16 @@ export function FormBuilderPage({ id }) {
                     <input value={selectedField.placeholder || ''} onChange={(event) => updateField(selectedField.id, { placeholder: event.target.value })} style={{ width: '100%', padding: '10px 12px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 9, color: 'var(--text)', fontSize: 12, outline: 'none' }} />
                   </div>
                 ) : null}
+                {selectedField.type !== 'section' ? (
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    <Label>Conditional Logic</Label>
+                    <select value={selectedField.showWhen?.fieldId || ''} onChange={(event) => updateField(selectedField.id, { showWhen: event.target.value ? { fieldId: event.target.value, value: selectedField.showWhen?.value || '' } : null })} style={{ width: '100%', padding: '10px 12px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 9, color: 'var(--text)', fontSize: 12, outline: 'none' }}>
+                      <option value="">Always show</option>
+                      {fields.filter((field) => !['section', 'hidden'].includes(field.type) && field.id !== selectedField.id).map((field) => <option key={field.id} value={field.id}>{field.label}</option>)}
+                    </select>
+                    {selectedField.showWhen?.fieldId ? <input value={selectedField.showWhen?.value || ''} onChange={(event) => updateField(selectedField.id, { showWhen: { fieldId: selectedField.showWhen.fieldId, value: event.target.value } })} placeholder="Show when value equals..." style={{ width: '100%', padding: '10px 12px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 9, color: 'var(--text)', fontSize: 12, outline: 'none' }} /> : null}
+                  </div>
+                ) : null}
                 {['dropdown', 'multiselect', 'checkbox'].includes(selectedField.type) ? (
                   <div>
                     <Label style={{ marginBottom: 6 }}>Options</Label>
@@ -1154,10 +1879,20 @@ export function FormBuilderPage({ id }) {
                       <button type="button" onClick={() => updateField(selectedField.id, { required: !selectedField.required })} style={{ flex: 1, padding: '9px 10px', borderRadius: 9, border: `1px solid ${selectedField.required ? primaryColor : UI.border}`, background: selectedField.required ? hexToRgba(primaryColor, 0.08) : UI.panel, color: 'var(--text-2)', fontSize: 12, fontWeight: 700 }}>Required: {selectedField.required ? 'Yes' : 'No'}</button>
                       <button type="button" onClick={() => updateField(selectedField.id, { half: !selectedField.half })} style={{ flex: 1, padding: '9px 10px', borderRadius: 9, border: `1px solid ${selectedField.half ? primaryColor : UI.border}`, background: selectedField.half ? hexToRgba(primaryColor, 0.08) : UI.panel, color: 'var(--text-2)', fontSize: 12, fontWeight: 700 }}>Width: {selectedField.half ? 'Half' : 'Full'}</button>
                     </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button type="button" onClick={() => moveField(selectedField.id, -1)} style={{ flex: 1, padding: '9px 10px', borderRadius: 9, border: `1px solid ${UI.border}`, background: UI.panel, color: 'var(--text-2)', fontSize: 12, fontWeight: 700 }}>Move Up</button>
+                      <button type="button" onClick={() => moveField(selectedField.id, 1)} style={{ flex: 1, padding: '9px 10px', borderRadius: 9, border: `1px solid ${UI.border}`, background: UI.panel, color: 'var(--text-2)', fontSize: 12, fontWeight: 700 }}>Move Down</button>
+                    </div>
                     <button type="button" onClick={() => removeField(selectedField.id)} style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: '1px solid rgba(239,68,68,0.2)', background: 'rgba(239,68,68,0.08)', color: '#DC2626', fontSize: 12, fontWeight: 700 }}>Remove Field</button>
                   </>
                 ) : (
-                  <button type="button" onClick={() => removeField(selectedField.id)} style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: '1px solid rgba(239,68,68,0.2)', background: 'rgba(239,68,68,0.08)', color: '#DC2626', fontSize: 12, fontWeight: 700 }}>Remove Section</button>
+                  <>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button type="button" onClick={() => moveField(selectedField.id, -1)} style={{ flex: 1, padding: '9px 10px', borderRadius: 9, border: `1px solid ${UI.border}`, background: UI.panel, color: 'var(--text-2)', fontSize: 12, fontWeight: 700 }}>Move Up</button>
+                      <button type="button" onClick={() => moveField(selectedField.id, 1)} style={{ flex: 1, padding: '9px 10px', borderRadius: 9, border: `1px solid ${UI.border}`, background: UI.panel, color: 'var(--text-2)', fontSize: 12, fontWeight: 700 }}>Move Down</button>
+                    </div>
+                    <button type="button" onClick={() => removeField(selectedField.id)} style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: '1px solid rgba(239,68,68,0.2)', background: 'rgba(239,68,68,0.08)', color: '#DC2626', fontSize: 12, fontWeight: 700 }}>Remove Section</button>
+                  </>
                 )}
               </Card>
             ) : (
@@ -1165,10 +1900,29 @@ export function FormBuilderPage({ id }) {
             )}
           </>}
           {tab === 'automation' && <>
-            <Label>Rule Engine</Label>
-            <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>Budget &gt; 50 000 → set lead priority high. Acute response → create task instantly. Missing phone → flag low contactability.</div></Card>
-            <Label>AI Prompt</Label>
-            <textarea defaultValue="You are a helpful support assistant for BuzzFlow. Use form answers to qualify the lead and draft the follow-up." style={{ width: '100%', minHeight: 120, padding: '10px 12px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 9, color: 'var(--text)', fontSize: 12, outline: 'none', resize: 'vertical', lineHeight: 1.65 }} />
+            <Label>Submission to Lead</Label>
+            <Card style={{ padding: 14, display: 'grid', gap: 10 }}>
+              {[
+                ['autoCreateLead', 'Auto-create lead'],
+                ['autoAssignOwner', 'Auto-assign owner'],
+                ['createFollowUpTask', 'Create follow-up task'],
+                ['sendInternalEmail', 'Queue SMTP email'],
+              ].map(([key, label]) => (
+                <button key={key} type="button" onClick={() => setAutomation((current) => ({ ...current, [key]: !current?.[key] }))} style={{ width: '100%', padding: '10px 12px', borderRadius: 9, border: `1px solid ${automation?.[key] ? primaryColor : UI.border}`, background: automation?.[key] ? hexToRgba(primaryColor, 0.08) : UI.panel, color: 'var(--text-2)', fontSize: 12, fontWeight: 700, textAlign: 'left' }}>
+                  {label}: {automation?.[key] ? 'On' : 'Off'}
+                </button>
+              ))}
+              <div>
+                <Label style={{ marginBottom: 6 }}>Notification email</Label>
+                <input value={notifyEmail} onChange={(event) => setNotifyEmail(event.target.value)} style={{ width: '100%', padding: '10px 12px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 9, color: 'var(--text)', fontSize: 12, outline: 'none' }} />
+              </div>
+              <div>
+                <Label style={{ marginBottom: 6 }}>Owner rotation</Label>
+                <input value={ownerRotation} onChange={(event) => setOwnerRotation(event.target.value)} style={{ width: '100%', padding: '10px 12px', background: UI.input, border: `1px solid ${UI.inputBorder}`, borderRadius: 9, color: 'var(--text)', fontSize: 12, outline: 'none' }} />
+              </div>
+            </Card>
+            <Label>SMTP</Label>
+            <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>Internal alerts are prepared for SMTP delivery from `ahmadlarin14@gmail.com`. Add the app password later in `.env.local` to activate live sending.</div></Card>
           </>}
           {tab === 'embed' && <>
             <Label>Embed Script</Label>
@@ -1235,13 +1989,24 @@ function DetailLayout({ eyebrow, title, subtitle, actions, side }) {
 }
 
 export function FormDetailPage({ id }) {
-  const { entries, forms, leads, setFormStatus, updateForm } = useBuzzStore();
+  const { communications, entries, forms, leads, logs, setFormStatus, updateForm } = useBuzzStore();
   const form = forms.find((item) => item.id === id);
   const [toast, flash] = useFlashMessage();
   if (!form) {
     return <PageShell title="Form not found" subtitle="This form is missing from the current local workspace."><EmptyState title="No form record available" detail="The URL is valid only if the record exists in the current browser workspace." /></PageShell>;
   }
   const relatedEntries = entries.filter((entry) => entry.formId === form.id);
+  const relatedAutomation = communications.filter((item) => item.title?.includes(form.name) || item.detail?.includes(form.notifyEmail || ''));
+  const timelineItems = buildTimelineEntries({
+    logs,
+    communications,
+    entries,
+    forms,
+    matchObject: (value) => String(value || '').includes(form.name) || String(value || '').includes(form.code),
+    matchCommunication: (item) => item.title?.includes(form.name) || item.detail?.includes(form.name),
+    matchEntry: (entry) => entry.formId === form.id,
+    matchForm: (item) => item.id === form.id,
+  });
   return (
     <>
       <DetailLayout
@@ -1250,8 +2015,8 @@ export function FormDetailPage({ id }) {
         subtitle={`${form.code} · ${form.status} · ${form.fields} fields · ${form.rules} rules`}
         actions={<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><Button href={`/forms/builder/${form.id}`} variant="primary"><Icon d={ICONS.edit} size={14} />Open Builder</Button><Button href={`/forms/${form.id}/preview`}><Icon d={ICONS.eye} size={14} />Public Preview</Button><Button onClick={() => { if (form.status !== 'active') { flash('Publish the form before copying the live embed script.'); return; } try { navigator.clipboard.writeText(`<script src="https://cdn.buzzflow.io/widget.js" data-form="${form.code}" async></script>`); } catch (error) {} flash('Live embed script copied.'); }}><Icon d={ICONS.copy} size={14} />Copy Embed Script</Button>{form.status !== 'active' ? <Button onClick={() => { updateForm({ id: form.id, title: form.name, fields: form.field_schema || [], published: true }); flash('Form published.'); }}><Icon d={ICONS.zap} size={14} />Publish</Button> : null}{form.status === 'active' ? <Button onClick={() => { setFormStatus(form.id, 'paused'); flash('Form paused.'); }}>Pause</Button> : null}{form.status !== 'draft' ? <Button variant="danger" onClick={() => { setFormStatus(form.id, 'draft'); flash('Form unpublished.'); }}>Unpublish</Button> : null}</div>}
         side={{
-          main: <><StatBand items={[{ label: 'Submissions', value: String(form.submissions), note: 'live', color: 'purple' }, { label: 'Conversion', value: `${form.conversion}%`, note: 'entry to lead', color: 'cyan' }, { label: 'Rules', value: String(form.rules), note: 'active', color: 'green' }]} /><TableCard title="Latest Entries" headers={[{ label: 'Contact', w: '1fr' }, { label: 'State', w: '110px' }, { label: 'Result', w: '140px' }, { label: 'Lead', w: '120px' }]} rows={relatedEntries.map((entry) => { const linkedLead = leads.find((lead) => lead.entryId === entry.id); return <ClickableRow key={entry.id} href={`/entries/${entry.id}`} columns={[{ w: '1fr', node: <PrimaryText title={entry.contact} sub={`${entry.email} · ${entry.submitted}`} /> }, { w: '110px', node: <Badge color={badgeColor(entry.state)}>{entry.state}</Badge> }, { w: '140px', node: <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{entry.result}</div> }, { w: '120px', node: linkedLead ? <div onClick={(event) => event.stopPropagation()}><Button href={`/leads/${linkedLead.id}`} size="sm">Open Lead</Button></div> : <span style={{ fontSize: 12, color: 'var(--text-3)' }}>No lead</span> }]} />; })} /></>,
-          aside: <><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Publishing</Label><div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}><Badge color={badgeColor(form.status)}>{form.status}</Badge><div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>Internal endpoint: {form.endpoint}</div></div></Card><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Embed</Label><pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: 10, color: '#7C3AED', fontFamily: '"JetBrains Mono", monospace', lineHeight: 1.8 }}>{`<script src="https://cdn.buzzflow.io/widget.js" data-form="${form.code}" async></script>`}</pre></Card></>,
+          main: <><StatBand items={[{ label: 'Submissions', value: String(form.submissions), note: 'live', color: 'purple' }, { label: 'Conversion', value: `${form.conversion}%`, note: 'entry to lead', color: 'cyan' }, { label: 'Rules', value: String(form.rules), note: 'active', color: 'green' }]} /><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Automation Pipeline</Label><div style={{ display: 'grid', gap: 8 }}><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Auto-create lead: {form.automation?.autoCreateLead ? 'On' : 'Off'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Auto-assign owner: {form.automation?.autoAssignOwner ? 'On' : 'Off'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Follow-up task: {form.automation?.createFollowUpTask ? 'On' : 'Off'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>SMTP target: {form.notifyEmail || 'Not set'}</div></div></Card>{relatedEntries.length ? <TableCard title="Latest Entries" headers={[{ label: 'Contact', w: '1fr' }, { label: 'State', w: '110px' }, { label: 'Result', w: '140px' }, { label: 'Lead', w: '120px' }]} rows={relatedEntries.map((entry) => { const linkedLead = leads.find((lead) => lead.entryId === entry.id); return <ClickableRow key={entry.id} href={`/entries/${entry.id}`} columns={[{ w: '1fr', node: <PrimaryText title={entry.contact} sub={`${entry.email} · ${entry.submitted}`} /> }, { w: '110px', node: <Badge color={badgeColor(entry.state)}>{entry.state}</Badge> }, { w: '140px', node: <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{entry.result}</div> }, { w: '120px', node: linkedLead ? <div onClick={(event) => event.stopPropagation()}><Button href={`/leads/${linkedLead.id}`} size="sm">Open Lead</Button></div> : <span style={{ fontSize: 12, color: 'var(--text-3)' }}>No lead</span> }]} />; })} /> : <SmartEmptyState title="Publish a form to start collecting leads" detail="A live form starts the full chain: submission, lead qualification, communication, tasks, and activity." actionLabel="Open Builder" actionHref={`/forms/builder/${form.id}`} secondaryLabel="Public Preview" secondaryHref={`/forms/${form.id}/preview`} /> }<TimelineList items={timelineItems} emptyTitle="No form timeline yet" emptyDetail="Publish or edit this form to start building a visible operational history." actionLabel="Open Builder" actionHref={`/forms/builder/${form.id}`} /></>,
+          aside: <><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Publishing</Label><div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}><Badge color={badgeColor(form.status)}>{form.status}</Badge><div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>Internal endpoint: {form.endpoint}</div></div></Card><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Embed</Label><pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: 10, color: '#7C3AED', fontFamily: '"JetBrains Mono", monospace', lineHeight: 1.8 }}>{`<script src="https://cdn.buzzflow.io/widget.js" data-form="${form.code}" async></script>`}</pre></Card><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Automation Activity</Label>{relatedAutomation.length ? relatedAutomation.slice(0, 3).map((item) => <div key={item.id} style={{ padding: '10px 0', borderBottom: `1px solid ${UI.border}` }}><div style={{ fontSize: 12, fontWeight: 700 }}>{item.title}</div><div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{item.detail}</div></div>) : <div style={{ fontSize: 12, color: 'var(--text-3)' }}>No automation mail or follow-up events logged yet.</div>}</Card></>,
         }}
       />
       <Toast message={toast} />
@@ -1260,24 +2025,59 @@ export function FormDetailPage({ id }) {
 }
 
 export function LeadDetailPage({ id }) {
-  const { communications, customers, entries, leads, tasks, convertLeadToCustomer, logCommunication } = useBuzzStore();
+  const router = useRouter();
+  const { communications, customers, entries, leads, tasks, convertLeadToCustomer, forms, files, createTask, logCommunication, logs, uploadFile, updateLead } = useBuzzStore();
   const lead = leads.find((item) => item.id === id);
   const [toast, flash] = useFlashMessage();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState({});
+  useEffect(() => {
+    if (lead) {
+      setDraft({
+        source: lead.source || '',
+        owner: lead.owner || 'Alex',
+        status: lead.status || 'new',
+        priority: lead.priority || 'medium',
+        urgency: lead.urgency || 'normal',
+        budget: lead.budget || '',
+        expectedValue: lead.expectedValue || '',
+        next: lead.next || '',
+        qualificationStatus: lead.qualificationStatus || '',
+        disqualificationReason: lead.disqualificationReason || '',
+        nextFollowUpDate: lead.nextFollowUpDate || '',
+        notes: lead.notes || '',
+      });
+    }
+  }, [lead]);
   if (!lead) {
     return <PageShell title="Lead not found" subtitle="This lead is missing from the current local workspace."><EmptyState title="No lead record available" detail="Create the lead again or open it from the current browser session where it was created." /></PageShell>;
   }
   const customer = customers.find((item) => item.leadId === lead.id);
   const relatedEntry = entries.find((item) => item.id === lead.entryId);
+  const sourceForm = forms.find((item) => item.name === lead.source);
+  const relatedTasks = tasks.filter((task) => task.related?.id === lead.id || task.related?.label === lead.name);
+  const relatedFiles = files.filter((file) => file.linked === `Lead ${lead.id}` || file.linked?.includes(lead.name));
+  const relatedCommunications = communications.filter((item) => item.related?.id === lead.id || item.linked === `Lead ${lead.id}` || item.linked?.includes(lead.name));
+  const timelineItems = buildTimelineEntries({
+    logs,
+    communications,
+    tasks,
+    entries,
+    matchObject: (value) => String(value || '').includes(lead.name) || String(value || '').includes(lead.id),
+    matchCommunication: (item) => item.related?.id === lead.id || item.linked === `Lead ${lead.id}` || item.linked?.includes(lead.name),
+    matchTask: (task) => task.related?.id === lead.id || task.related?.label === lead.name,
+    matchEntry: (entry) => entry.id === lead.entryId,
+  });
   return (
     <>
       <DetailLayout
       eyebrow="Lead Record"
       title={`${lead.name} · ${lead.company}`}
       subtitle={`${lead.id} · ${lead.status} · ${lead.priority} priority · score ${lead.score}`}
-      actions={<div style={{ display: 'flex', gap: 8 }}><Button variant="primary" onClick={() => { if (customer) { flash('Lead is already converted.'); return; } convertLeadToCustomer(lead.id); flash('Customer created from lead.'); }}><Icon d={ICONS.check} size={14} />Convert to Customer</Button><Button onClick={() => { logCommunication({ title: `Follow-up for ${lead.name}`, linked: lead.id, detail: 'Added from lead record.' }); flash('New note added to lead.'); }}><Icon d={ICONS.plus} size={14} />New Note</Button></div>}
+      actions={<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><Button variant="primary" onClick={() => { if (customer) { flash('Lead is already converted.'); return; } convertLeadToCustomer(lead.id); flash('Customer created from lead.'); }}><Icon d={ICONS.check} size={14} />Convert to Customer</Button><Button onClick={() => { const taskId = createTask({ title: `Follow up ${lead.name}`, owner: lead.owner, assignedBy: 'Alex', priority: lead.priority, related: { type: 'lead', id: lead.id, label: lead.name }, type: 'follow-up', notes: 'Created from lead quick action.' }); flash('Task created for lead.'); router.push(`/tasks/${taskId}`); }}><Icon d={ICONS.check} size={14} />Create Task</Button><Button onClick={() => { const id = logCommunication({ title: `Email to ${lead.name}`, linked: `Lead ${lead.id}`, detail: 'Created from lead record.', body: `Subject: Follow-up for ${lead.name}`, owner: lead.owner, type: 'email', status: 'draft', internal: false, template: 'follow-up', related: { type: 'lead', id: lead.id, label: lead.name }, threadId: lead.id }); flash('Draft email created.'); router.push(`/communication/${id}`); }}><Icon d={ICONS.mail} size={14} />Send Email</Button><Button onClick={() => { logCommunication({ title: `Follow-up for ${lead.name}`, linked: `Lead ${lead.id}`, detail: 'Added from lead record.', owner: lead.owner, type: 'note', status: 'sent', internal: true, related: { type: 'lead', id: lead.id, label: lead.name }, threadId: lead.id }); flash('New note added to lead.'); }}><Icon d={ICONS.plus} size={14} />Attach Note</Button><Button onClick={() => { uploadFile({ name: `${lead.name.toLowerCase().replace(/\s+/g, '-')}-brief.pdf`, linked: `Lead ${lead.id}` }); flash('File attached to lead.'); }}><Icon d={ICONS.link} size={14} />Attach File</Button></div>}
       side={{
-        main: <><Card style={{ padding: 18 }}><Label style={{ marginBottom: 12 }}>Lead Intelligence</Label><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}><div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Source</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{lead.source}</div></div><div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Owner</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{lead.owner}</div></div><div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Value</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{lead.value}</div></div><div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Next Step</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{lead.next}</div></div></div><div style={{ marginTop: 14, fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>{lead.notes}</div></Card><TableCard title="Communication Timeline" headers={[{ label: 'Event', w: '1fr' }, { label: 'Owner', w: '100px' }, { label: 'Type', w: '120px' }]} rows={communications.slice(0, 3).map((item) => <Row key={item.id} columns={[{ w: '1fr', node: <PrimaryText title={item.title} sub={item.detail} /> }, { w: '100px', node: <Avatar name={item.owner} size={24} /> }, { w: '120px', node: <Badge color="cyan">{item.type}</Badge> }]} />)} /></>,
-        aside: <><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Connected Records</Label><div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Entry: {relatedEntry?.id || 'None'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Customer: {customer?.id || 'Not converted'}</div><div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{lead.tags.map((tag) => <Badge key={tag} color="purple">{tag}</Badge>)}</div></div></Card><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Open Tasks</Label>{tasks.slice(0, 2).map((task) => <div key={task.id} style={{ padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}><div style={{ fontSize: 12, fontWeight: 700 }}>{task.title}</div><div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{task.due}</div></div>)}</Card></>,
+        main: <><InlineEditor editing={editing} onEditToggle={() => setEditing((current) => !current)} onSave={() => { updateLead(lead.id, draft); setEditing(false); flash('Lead updated.'); }}><Label style={{ marginBottom: 12 }}>Lead Qualification</Label>{editing ? <div style={{ display: 'grid', gap: 12 }}><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}><Field label="Source" value={draft.source || ''} onChange={(event) => setDraft((current) => ({ ...current, source: event.target.value }))} /><SelectField label="Owner" value={draft.owner || 'Alex'} onChange={(event) => setDraft((current) => ({ ...current, owner: event.target.value }))} options={TEAM_MEMBERS.map((member) => ({ value: member.name, label: member.name }))} /><SelectField label="Status" value={draft.status || 'new'} onChange={(event) => setDraft((current) => ({ ...current, status: event.target.value }))} options={[{ value: 'new', label: 'New' }, { value: 'warm', label: 'Warm' }, { value: 'qualified', label: 'Qualified' }, { value: 'cold', label: 'Cold' }, { value: 'archived', label: 'Archived' }]} /></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}><SelectField label="Priority" value={draft.priority || 'medium'} onChange={(event) => setDraft((current) => ({ ...current, priority: event.target.value }))} options={TASK_PRIORITY_OPTIONS} /><Field label="Urgency" value={draft.urgency || ''} onChange={(event) => setDraft((current) => ({ ...current, urgency: event.target.value }))} /><Field label="Qualification" value={draft.qualificationStatus || ''} onChange={(event) => setDraft((current) => ({ ...current, qualificationStatus: event.target.value }))} /></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}><Field label="Budget" value={draft.budget || ''} onChange={(event) => setDraft((current) => ({ ...current, budget: event.target.value }))} /><Field label="Expected Value" value={draft.expectedValue || ''} onChange={(event) => setDraft((current) => ({ ...current, expectedValue: event.target.value }))} /><Field label="Next Follow-up" value={draft.nextFollowUpDate || ''} onChange={(event) => setDraft((current) => ({ ...current, nextFollowUpDate: event.target.value }))} placeholder="2026-04-30" /></div><Field label="Next Step" value={draft.next || ''} onChange={(event) => setDraft((current) => ({ ...current, next: event.target.value }))} /><Field label="Disqualification Reason" value={draft.disqualificationReason || ''} onChange={(event) => setDraft((current) => ({ ...current, disqualificationReason: event.target.value }))} /><TextAreaField label="Notes" value={draft.notes || ''} onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))} rows={4} /></div> : <><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}><div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Source</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{lead.source}</div></div><div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Owner</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{lead.owner}</div></div><div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Urgency</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{lead.urgency}</div></div><div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Budget</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{lead.budget}</div></div><div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Expected Value</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{lead.expectedValue}</div></div><div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Next Step</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{lead.next}</div></div><div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Qualification</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{lead.qualificationStatus}</div></div><div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Last Contacted</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{lead.lastContacted}</div></div><div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Next Follow-up</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{lead.nextFollowUpDate || 'Not set'}</div></div><div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Disqualification Reason</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{lead.disqualificationReason || 'None'}</div></div></div><div style={{ marginTop: 14, fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>{lead.notes}</div></>}</InlineEditor><TableCard title="Communication Timeline" headers={[{ label: 'Event', w: '1fr' }, { label: 'Owner', w: '100px' }, { label: 'Type', w: '120px' }]} rows={relatedCommunications.map((item) => <Row key={item.id} columns={[{ w: '1fr', node: <PrimaryText title={item.title} sub={item.detail} /> }, { w: '100px', node: <Avatar name={item.owner} size={24} /> }, { w: '120px', node: <Badge color="cyan">{item.type}</Badge> }]} />)} /><TimelineList items={timelineItems} emptyTitle="No lead history yet" emptyDetail="Contact the lead, create a task, or attach a note to start building a visible timeline." actionLabel="Open Communication" actionHref="/communication/new" /></>,
+        aside: <><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Connected Records</Label><div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Entry: {relatedEntry?.id || 'None'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Customer: {customer?.id || 'Not converted'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Source form: {sourceForm?.name || lead.source}</div><div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{lead.tags.map((tag) => <Badge key={tag} color="purple">{tag}</Badge>)}</div></div></Card><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Automation Summary</Label><div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>{lead.automationSummary || `Score ${lead.score}. Priority ${lead.priority}. Routed from ${lead.source}.`}</div></Card><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Open Tasks</Label>{(relatedTasks.length ? relatedTasks : [{ id: 'empty', title: 'No open tasks', due: 'N/A' }]).map((task) => <div key={task.id} style={{ padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}><div style={{ fontSize: 12, fontWeight: 700 }}>{task.title}</div><div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{task.due}</div></div>)}</Card><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Attached Files</Label>{(relatedFiles.length ? relatedFiles : [{ id: 'file-empty', name: 'No files attached', size: '' }]).map((file) => <div key={file.id} style={{ padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}><div style={{ fontSize: 12, fontWeight: 700 }}>{file.name}</div><div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{file.size}</div></div>)}</Card></>,
       }}
       />
       <Toast message={toast} />
@@ -1286,23 +2086,92 @@ export function LeadDetailPage({ id }) {
 }
 
 export function CustomerDetailPage({ id }) {
-  const { customers, files, invoices, createInvoice, uploadFile } = useBuzzStore();
+  const { communications, customers, entries, files, forms, invoices, logs, tasks, createInvoice, uploadFile, updateCustomer } = useBuzzStore();
   const customer = customers.find((item) => item.id === id);
   const [toast, flash] = useFlashMessage();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState({});
+  useEffect(() => {
+    if (customer) {
+      setDraft({
+        companyName: customer.companyName || customer.name || '',
+        contactPerson: customer.contactPerson || customer.contact || '',
+        email: customer.email || '',
+        phone: customer.phone || '',
+        website: customer.website || '',
+        organizationNumber: customer.organizationNumber || '',
+        billingAddress: customer.billingAddress || '',
+        owner: customer.owner || 'Alex',
+        stage: customer.stage || '',
+        industry: customer.industry || '',
+        companySize: customer.companySize || '1-10',
+        health: customer.health || 'stable',
+        healthScore: String(customer.healthScore || ''),
+        tags: (customer.tags || []).join(', '),
+        notes: customer.notes || '',
+      });
+    }
+  }, [customer]);
   if (!customer) {
     return <PageShell title="Customer not found" subtitle="This customer is missing from the current local workspace."><EmptyState title="No customer record available" detail="Open the customer from the list or recreate it in this browser workspace." /></PageShell>;
   }
-  const relatedInvoices = invoices.filter((invoice) => invoice.customer === customer.name);
+  const relatedInvoices = invoices.filter((invoice) => invoice.customer === customer.name || invoice.customer === customer.companyName);
+  const relatedFiles = files.filter((file) => file.linked === `Customer ${customer.id}` || file.linked === `Lead ${customer.sourceLeadId}` || file.linked?.includes(customer.name));
+  const relatedTasks = tasks.filter((task) => task.related?.id === customer.id || task.related?.id === customer.sourceLeadId || task.related?.label === customer.name || task.related?.label === customer.companyName);
+  const relatedCommunications = communications.filter((item) => item.linked === `Customer ${customer.id}` || item.linked === `Lead ${customer.sourceLeadId}` || item.linked?.includes(customer.name));
+  const relatedEntries = entries.filter((entry) => entry.formId === customer.sourceFormId || entry.contact === (customer.contactPerson || customer.contact) || entry.email === customer.email);
+  const sourceForm = forms.find((form) => form.id === customer.sourceFormId);
+  const teamMembers = Array.from(new Set([customer.owner, ...(customer.team || []), ...relatedTasks.map((task) => task.owner)].filter(Boolean)));
+  const timelineItems = buildTimelineEntries({
+    logs,
+    communications,
+    tasks,
+    invoices,
+    entries,
+    matchObject: (value) => String(value || '').includes(customer.companyName || customer.name) || String(value || '').includes(customer.id),
+    matchCommunication: (item) => item.linked === `Customer ${customer.id}` || item.linked === `Lead ${customer.sourceLeadId}` || item.linked?.includes(customer.name),
+    matchTask: (task) => task.related?.id === customer.id || task.related?.id === customer.sourceLeadId || task.related?.label === customer.name || task.related?.label === customer.companyName,
+    matchInvoice: (invoice) => invoice.customerId === customer.id || invoice.customer === customer.name || invoice.customer === customer.companyName,
+    matchEntry: (entry) => entry.formId === customer.sourceFormId || entry.contact === (customer.contactPerson || customer.contact) || entry.email === customer.email,
+  });
   return (
     <>
       <DetailLayout
       eyebrow="Customer Account"
-      title={customer.name}
+      title={customer.companyName || customer.name}
       subtitle={`${customer.id} · ${customer.status} · ${customer.lifecycle}`}
       actions={<div style={{ display: 'flex', gap: 8 }}><Button variant="primary" onClick={() => { createInvoice({ customer: customer.name, amount: 'SEK 12,000' }); flash('Invoice draft created for customer.'); }}><Icon d={ICONS.hash} size={14} />Create Invoice</Button><Button onClick={() => { uploadFile({ name: `${customer.name.toLowerCase().replace(/\s+/g, '-')}-brief.pdf`, linked: `Customer ${customer.id}` }); flash('File uploaded for customer.'); }}><Icon d={ICONS.plus} size={14} />Add File</Button></div>}
       side={{
-        main: <><StatBand items={[{ label: 'Total Billing', value: customer.total, note: 'lifetime', color: 'green' }, { label: 'Invoices', value: String(relatedInvoices.length), note: customer.invoices, color: 'yellow' }, { label: 'Status', value: customer.status, note: 'lifecycle', color: badgeColor(customer.status) }]} /><TableCard title="Invoices" headers={[{ label: 'Invoice', w: '1fr' }, { label: 'Status', w: '120px' }, { label: 'Due', w: '120px' }]} rows={relatedInvoices.map((invoice) => <Row key={invoice.id} columns={[{ w: '1fr', node: <PrimaryText title={invoice.id} sub={invoice.amount} /> }, { w: '120px', node: <Badge color={badgeColor(invoice.status)}>{invoice.status}</Badge> }, { w: '120px', node: <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{invoice.due}</div> }]} />)} /></>,
-        aside: <><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Customer Snapshot</Label><div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>{customer.activity}</div></Card><Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Recent Files</Label>{files.slice(0, 2).map((file) => <div key={file.id} style={{ padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}><div style={{ fontSize: 12, fontWeight: 700 }}>{file.name}</div><div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{file.size}</div></div>)}</Card></>,
+        main: <>
+          <StatBand items={[{ label: 'Total Billing', value: customer.total, note: 'lifetime', color: 'green' }, { label: 'Health', value: String(customer.healthScore || 0), note: customer.health, color: customer.health === 'at risk' ? 'red' : customer.health === 'healthy' ? 'green' : 'yellow' }, { label: 'Open Tasks', value: String(relatedTasks.filter((task) => task.status !== 'done').length), note: customer.stage, color: 'purple' }]} />
+          <InlineEditor editing={editing} onEditToggle={() => setEditing((current) => !current)} onSave={() => { updateCustomer(customer.id, { ...draft, name: draft.companyName, tags: String(draft.tags || '').split(',').map((item) => item.trim()).filter(Boolean), healthScore: Number(draft.healthScore) || 0 }); setEditing(false); flash('Customer updated.'); }} actions={<Badge color={customer.health === 'at risk' ? 'red' : customer.health === 'healthy' ? 'green' : 'yellow'}>{customer.health}</Badge>}>
+            <Label style={{ marginBottom: 12 }}>Customer Profile</Label>
+            {editing ? <div style={{ display: 'grid', gap: 12 }}><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}><Field label="Company Name" value={draft.companyName || ''} onChange={(event) => setDraft((current) => ({ ...current, companyName: event.target.value }))} /><Field label="Contact Person" value={draft.contactPerson || ''} onChange={(event) => setDraft((current) => ({ ...current, contactPerson: event.target.value }))} /></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}><Field label="Email" value={draft.email || ''} onChange={(event) => setDraft((current) => ({ ...current, email: event.target.value }))} /><Field label="Phone" value={draft.phone || ''} onChange={(event) => setDraft((current) => ({ ...current, phone: event.target.value }))} /></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}><Field label="Website" value={draft.website || ''} onChange={(event) => setDraft((current) => ({ ...current, website: event.target.value }))} /><Field label="Org Number" value={draft.organizationNumber || ''} onChange={(event) => setDraft((current) => ({ ...current, organizationNumber: event.target.value }))} /><SelectField label="Owner" value={draft.owner || 'Alex'} onChange={(event) => setDraft((current) => ({ ...current, owner: event.target.value }))} options={TEAM_MEMBERS.map((member) => ({ value: member.name, label: member.name }))} /></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}><Field label="Stage" value={draft.stage || ''} onChange={(event) => setDraft((current) => ({ ...current, stage: event.target.value }))} /><Field label="Industry" value={draft.industry || ''} onChange={(event) => setDraft((current) => ({ ...current, industry: event.target.value }))} /><SelectField label="Company Size" value={draft.companySize || '1-10'} onChange={(event) => setDraft((current) => ({ ...current, companySize: event.target.value }))} options={CUSTOMER_SIZE_OPTIONS} /></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}><SelectField label="Health" value={draft.health || 'stable'} onChange={(event) => setDraft((current) => ({ ...current, health: event.target.value }))} options={CUSTOMER_HEALTH_OPTIONS} /><Field label="Health Score" value={draft.healthScore || ''} onChange={(event) => setDraft((current) => ({ ...current, healthScore: event.target.value }))} /><Field label="Tags" value={draft.tags || ''} onChange={(event) => setDraft((current) => ({ ...current, tags: event.target.value }))} /></div><TextAreaField label="Billing Address" value={draft.billingAddress || ''} onChange={(event) => setDraft((current) => ({ ...current, billingAddress: event.target.value }))} rows={3} /><TextAreaField label="Internal Notes" value={draft.notes || ''} onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))} rows={4} /></div> : <><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+              <div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Contact</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{customer.contactPerson || customer.contact}</div></div>
+              <div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Owner</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{customer.owner}</div></div>
+              <div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Email</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{customer.email || 'Not set'}</div></div>
+              <div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Phone</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{customer.phone || 'Not set'}</div></div>
+              <div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Website</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{customer.website || 'Not set'}</div></div>
+              <div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Org Number</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{customer.organizationNumber || 'Not set'}</div></div>
+              <div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Industry</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{customer.industry}</div></div>
+              <div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Company Size</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{customer.companySize}</div></div>
+            </div>
+            <div style={{ marginTop: 14, fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>{customer.notes || customer.activity}</div>
+            <div style={{ marginTop: 12, display: 'flex', gap: 6, flexWrap: 'wrap' }}>{(customer.tags || []).map((tag) => <Badge key={tag} color="purple">{tag}</Badge>)}</div></>}
+          </InlineEditor>
+          <TimelineList items={timelineItems.length ? timelineItems : [{ id: 'timeline-empty', title: customer.activity, detail: customer.lifecycle, actor: customer.owner, time: 'Now' }]} emptyTitle="No customer history yet" emptyDetail="Create an invoice, task, or internal note to start a real account timeline." actionLabel="Create Invoice" actionHref="/invoices/new" />
+          <TableCard title="Communication History" headers={[{ label: 'Event', w: '1fr' }, { label: 'Status', w: '100px' }, { label: 'Owner', w: '100px' }]} rows={(relatedCommunications.length ? relatedCommunications : [{ id: 'com-empty', title: 'No communication yet', status: 'draft', owner: customer.owner, detail: 'Start with an internal note or outbound email.' }]).map((item) => <Row key={item.id} columns={[{ w: '1fr', node: <PrimaryText title={item.title} sub={item.detail} /> }, { w: '100px', node: <Badge color={badgeColor(item.status)}>{item.status}</Badge> }, { w: '100px', node: <Avatar name={item.owner} size={24} /> }]} />)} />
+          <TableCard title="Open Tasks" headers={[{ label: 'Task', w: '1fr' }, { label: 'Status', w: '110px' }, { label: 'Due', w: '120px' }]} rows={(relatedTasks.length ? relatedTasks : [{ id: 'task-empty', title: 'No linked tasks yet', status: 'done', due: 'N/A' }]).map((task) => <Row key={task.id} columns={[{ w: '1fr', node: <PrimaryText title={task.title} sub={task.type || 'task'} /> }, { w: '110px', node: <Badge color={badgeColor(task.status)}>{task.status}</Badge> }, { w: '120px', node: <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{task.due}</div> }]} />)} />
+          <TableCard title="Invoices" headers={[{ label: 'Invoice', w: '1fr' }, { label: 'Status', w: '120px' }, { label: 'Due', w: '120px' }]} rows={relatedInvoices.map((invoice) => <Row key={invoice.id} columns={[{ w: '1fr', node: <PrimaryText title={invoice.id} sub={invoice.amount} /> }, { w: '120px', node: <Badge color={badgeColor(invoice.status)}>{invoice.status}</Badge> }, { w: '120px', node: <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{invoice.due}</div> }]} />)} />
+          <TableCard title="Open Deals / Leads" headers={[{ label: 'Record', w: '1fr' }, { label: 'Status', w: '110px' }, { label: 'Source', w: '140px' }]} rows={[(customer.sourceLeadId ? { id: customer.sourceLeadId, title: customer.contactPerson || customer.contact, status: customer.stage, source: sourceForm?.name || customer.sourceLabel } : { id: 'lead-empty', title: 'No open linked lead', status: 'stable', source: customer.sourceLabel || 'Manual' })].map((item) => <Row key={item.id} columns={[{ w: '1fr', node: <PrimaryText title={item.title} sub={item.id} /> }, { w: '110px', node: <Badge color={badgeColor(item.status)}>{item.status}</Badge> }, { w: '140px', node: <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{item.source}</div> }]} />)} />
+        </>,
+        aside: <>
+          <Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Assigned Team</Label><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{teamMembers.map((member) => <div key={member} style={{ display: 'flex', alignItems: 'center', gap: 8 }}><Avatar name={member} size={24} /><span style={{ fontSize: 12, color: 'var(--text-2)', fontWeight: 700 }}>{member}</span></div>)}</div></Card>
+          <Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Source</Label><div style={{ display: 'grid', gap: 8 }}><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Source lead: {customer.sourceLeadId || 'None'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Source form: {sourceForm?.name || customer.sourceLabel || 'Manual'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Billing address: {customer.billingAddress || 'Not set'}</div></div></Card>
+          <Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Recent Files</Label>{(relatedFiles.length ? relatedFiles : files.slice(0, 1)).map((file) => <div key={file.id} style={{ padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}><div style={{ fontSize: 12, fontWeight: 700 }}>{file.name}</div><div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{file.size}</div></div>)}</Card>
+          <Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Forms Submitted</Label><div style={{ display: 'grid', gap: 8 }}>{(relatedEntries.length ? relatedEntries : [{ id: 'entry-empty', form: sourceForm?.name || customer.sourceLabel || 'Manual', submitted: 'No submissions yet' }]).map((entry) => <div key={entry.id} style={{ fontSize: 12, color: 'var(--text-2)' }}>{entry.form} · {entry.submitted}</div>)}</div></Card>
+          <Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Automation Status</Label><div style={{ display: 'grid', gap: 8 }}><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Health automation: {customer.health}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Retention trigger: {customer.lastActiveDate ? `last active ${customer.lastActiveDate}` : 'not tracked'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Open automated tasks: {relatedTasks.filter((task) => String(task.assignedBy).toLowerCase() === 'system').length}</div></div></Card>
+        </>,
       }}
       />
       <Toast message={toast} />
@@ -1315,9 +2184,12 @@ export function PublicEmbedPage({ id, mode = 'live' }) {
   const form = forms.find((item) => item.id === id);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState('');
+  const [mailMessage, setMailMessage] = useState('');
   const fields = useMemo(() => normalizeBuilderFields(form?.field_schema), [form?.field_schema]);
   const accentColor = form?.color || BUILDER_COLORS[0];
+  const steps = useMemo(() => buildFormSteps(fields, Boolean(form?.multiStepEnabled)), [fields, form?.multiStepEnabled]);
   const [values, setValues] = useState({});
+  const [currentStep, setCurrentStep] = useState(0);
   useEffect(() => {
     const initialValues = {};
     fields.forEach((field) => {
@@ -1327,12 +2199,25 @@ export function PublicEmbedPage({ id, mode = 'live' }) {
     setValues(initialValues);
     setSubmitted(false);
     setError('');
+    setCurrentStep(0);
   }, [fields, form?.id]);
   if (!form) {
     return <div className="buzz-scroll buzz-fadein" style={{ flex: 1, padding: '48px 20px' }}><div style={{ maxWidth: 640, margin: '0 auto' }}><EmptyState title="Form unavailable" detail="This form is not available in the current browser workspace." /></div></div>;
   }
   const isDraftPreview = mode === 'draft';
   const canSubmit = !isDraftPreview && form.status === 'active';
+  const activeStep = steps[currentStep] || steps[0];
+  const visibleStepFields = (activeStep?.fields || []).filter((field) => shouldDisplayField(field, values));
+  const validateVisibleRequiredFields = () => {
+    const missingFields = visibleStepFields.filter((field) => {
+      if (field.type === 'hidden' || !field.required) return false;
+      const value = values[field.id];
+      if (field.type === 'multiselect') return !Array.isArray(value) || value.length === 0;
+      if (field.type === 'checkbox') return !value;
+      return !String(value || '').trim();
+    });
+    return missingFields;
+  };
   return (
     <div className="buzz-scroll buzz-fadein" style={{ flex: 1, padding: '48px 20px' }}>
       <div style={{ maxWidth: 640, margin: '0 auto' }}>
@@ -1342,16 +2227,19 @@ export function PublicEmbedPage({ id, mode = 'live' }) {
             <span style={{ fontSize: 20, fontWeight: 900, letterSpacing: '-0.03em', background: `linear-gradient(135deg, ${accentColor}, #22D3EE)`, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>BuzzFlow</span>
           </div>
           <h1 style={{ fontSize: 21, fontWeight: 800, letterSpacing: '-0.03em', margin: 0 }}>{form.name}</h1>
-          <p style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 6, marginBottom: 26 }}>{isDraftPreview ? 'Draft preview. This route never creates a live submission.' : 'Public embedded form preview. Published status, validation shell, and submission endpoint are controlled internally.'}</p>
+          <p style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 6, marginBottom: 26 }}>{form.description || (isDraftPreview ? 'Draft preview. This route never creates a live submission.' : 'Public embedded form preview. Published status, validation shell, and submission endpoint are controlled internally.')}</p>
+          {form.multiStepEnabled ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
+              {steps.map((step, index) => (
+                <div key={step.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ width: 26, height: 26, borderRadius: 999, background: index === currentStep ? accentColor : hexToRgba(accentColor, 0.08), color: index === currentStep ? '#fff' : accentColor, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 800 }}>{index + 1}</div>
+                  <div style={{ fontSize: 12, color: index === currentStep ? 'var(--text)' : 'var(--text-3)', fontWeight: 700 }}>{step.label}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <div className="buzz-embed-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 13 }}>
-            {fields.map((field) => {
-              if (field.type === 'section') {
-                return (
-                  <div key={field.id} style={{ gridColumn: 'span 2', paddingTop: 4 }}>
-                    <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--text)', marginBottom: 10 }}>{field.label}</div>
-                  </div>
-                );
-              }
+            {visibleStepFields.map((field) => {
               if (field.type === 'hidden') {
                 return null;
               }
@@ -1395,7 +2283,8 @@ export function PublicEmbedPage({ id, mode = 'live' }) {
             })}
           </div>
           <div style={{ marginTop: 20, display: 'flex', gap: 10 }}>
-            <Button variant="primary" onClick={() => {
+            {!form.multiStepEnabled || currentStep === steps.length - 1 ? (
+              <Button variant="primary" onClick={async () => {
               if (isDraftPreview) {
                 setSubmitted(true);
                 setError('');
@@ -1411,19 +2300,34 @@ export function PublicEmbedPage({ id, mode = 'live' }) {
                 setSubmitted(false);
                 return;
               }
-              const missingFields = fields.filter((field) => {
-                if (field.type === 'section' || field.type === 'hidden' || !field.required) return false;
-                const value = values[field.id];
-                if (field.type === 'multiselect') return !Array.isArray(value) || value.length === 0;
-                if (field.type === 'checkbox') return !value;
-                return !String(value || '').trim();
-              });
+              const missingFields = validateVisibleRequiredFields();
               if (missingFields.length) {
                 setError(`${missingFields[0].label} is required.`);
                 setSubmitted(false);
                 return;
               }
               submitEntry({ formId: form.id, ...deriveEntryPayload(fields, values) });
+              if (form.automation?.sendInternalEmail) {
+                try {
+                  const response = await fetch('/api/automation/mail', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      to: form.notifyEmail,
+                      subject: `New ${form.name} submission`,
+                      replyTo: deriveEntryPayload(fields, values).email,
+                      text: `${deriveEntryPayload(fields, values).contact} submitted ${form.name}.`,
+                      html: `<h2>${form.name}</h2><p><strong>Contact:</strong> ${deriveEntryPayload(fields, values).contact}</p><p><strong>Email:</strong> ${deriveEntryPayload(fields, values).email}</p><pre>${JSON.stringify(deriveEntryPayload(fields, values).raw, null, 2)}</pre>`,
+                    }),
+                  });
+                  const payload = await response.json();
+                  setMailMessage(payload?.skipped ? 'SMTP configured later. Notification queued locally.' : 'Internal email sent.');
+                } catch (mailError) {
+                  setMailMessage('SMTP request failed, but the submission was saved.');
+                }
+              } else {
+                setMailMessage('');
+              }
               setSubmitted(true);
               setError('');
               const resetValues = {};
@@ -1432,11 +2336,31 @@ export function PublicEmbedPage({ id, mode = 'live' }) {
                 resetValues[field.id] = field.type === 'multiselect' ? [] : field.type === 'checkbox' ? false : '';
               });
               setValues(resetValues);
-            }}><Icon d={ICONS.check} size={14} />Submit Entry</Button>
+              }}>
+                <Icon d={ICONS.check} size={14} />{form.submitLabel || 'Submit'}
+              </Button>
+            ) : null}
             <Badge color={badgeColor(form.status)}>{form.status}</Badge>
           </div>
+          {form.multiStepEnabled ? (
+            <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+              <Button onClick={() => setCurrentStep((current) => Math.max(0, current - 1))}><Icon d={ICONS.arrowLeft} size={12} />Previous</Button>
+              {currentStep < steps.length - 1 ? (
+                <Button variant="primary" onClick={() => {
+                  const missingFields = validateVisibleRequiredFields();
+                  if (missingFields.length) {
+                    setError(`${missingFields[0].label} is required.`);
+                    return;
+                  }
+                  setError('');
+                  setCurrentStep((current) => Math.min(steps.length - 1, current + 1));
+                }}>Next Step</Button>
+              ) : null}
+            </div>
+          ) : null}
           {error ? <div style={{ marginTop: 14, fontSize: 12, color: '#EF4444', fontWeight: 700 }}>{error}</div> : null}
-          {submitted ? <div style={{ marginTop: 14, fontSize: 12, color: '#10B981', fontWeight: 700 }}>{isDraftPreview ? 'Draft preview submitted successfully. No production entry was created.' : 'Entry submitted successfully. Qualification, task creation, and activity logging would run next.'}</div> : null}
+          {submitted ? <div style={{ marginTop: 14, fontSize: 12, color: '#10B981', fontWeight: 700 }}>{isDraftPreview ? 'Draft preview submitted successfully. No production entry was created.' : (form.successMessage || 'Entry submitted successfully. Qualification, task creation, and activity logging would run next.')}</div> : null}
+          {mailMessage ? <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-3)', fontWeight: 600 }}>{mailMessage}</div> : null}
         </Card>
       </div>
     </div>
@@ -1497,30 +2421,174 @@ export function NewLeadPage() {
 
 export function NewCustomerPage() {
   const router = useRouter();
-  const { createCustomer } = useBuzzStore();
+  const { createCustomer, forms, leads } = useBuzzStore();
   const [name, setName] = useState('');
   const [contact, setContact] = useState('');
+  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [website, setWebsite] = useState('');
+  const [organizationNumber, setOrganizationNumber] = useState('');
+  const [billingAddress, setBillingAddress] = useState('');
+  const [tags, setTags] = useState('');
+  const [owner, setOwner] = useState('Alex');
+  const [stage, setStage] = useState('active onboarding');
+  const [sourceLeadId, setSourceLeadId] = useState('');
+  const [sourceFormId, setSourceFormId] = useState('');
+  const [industry, setIndustry] = useState('');
+  const [companySize, setCompanySize] = useState('1-10');
+  const [health, setHealth] = useState('stable');
+  const [healthScore, setHealthScore] = useState('60');
+  const [notes, setNotes] = useState('');
   return (
     <PageShell title="New Customer" subtitle="Manual customer creation">
       <Card style={{ padding: 18, display: 'grid', gap: 12 }}>
-        <Field label="Customer Name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Northstar Studio" />
-        <Field label="Primary Contact" value={contact} onChange={(event) => setContact(event.target.value)} placeholder="Nora Lind" />
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <Field label="Company Name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Northstar Studio" />
+          <Field label="Contact Person" value={contact} onChange={(event) => setContact(event.target.value)} placeholder="Nora Lind" />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <Field label="Email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="nora@northstar.se" />
+          <Field label="Phone" value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+46 70 118 22 14" />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <Field label="Website" value={website} onChange={(event) => setWebsite(event.target.value)} placeholder="https://northstar.se" />
+          <Field label="Organization Number" value={organizationNumber} onChange={(event) => setOrganizationNumber(event.target.value)} placeholder="559188-4211" />
+        </div>
+        <TextAreaField label="Billing Address" value={billingAddress} onChange={(event) => setBillingAddress(event.target.value)} placeholder="Street, postal code, city" rows={3} />
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+          <Field label="Tags" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="premium, design, retainer" />
+          <SelectField label="Owner / Account Manager" value={owner} onChange={(event) => setOwner(event.target.value)} options={['Alex', 'Sarah', 'Mika'].map((value) => ({ value, label: value }))} />
+          <Field label="Pipeline Stage" value={stage} onChange={(event) => setStage(event.target.value)} placeholder="active onboarding" />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <SelectField label="Source Lead" value={sourceLeadId} onChange={(event) => setSourceLeadId(event.target.value)} options={[{ value: '', label: 'None' }, ...leads.map((lead) => ({ value: lead.id, label: `${lead.name} · ${lead.company}` }))]} />
+          <SelectField label="Source Form" value={sourceFormId} onChange={(event) => setSourceFormId(event.target.value)} options={[{ value: '', label: 'None' }, ...forms.map((form) => ({ value: form.id, label: `${form.name} · ${form.code}` }))]} />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+          <Field label="Industry" value={industry} onChange={(event) => setIndustry(event.target.value)} placeholder="Design Studio" />
+          <SelectField label="Company Size" value={companySize} onChange={(event) => setCompanySize(event.target.value)} options={CUSTOMER_SIZE_OPTIONS} />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <SelectField label="Customer Health" value={health} onChange={(event) => setHealth(event.target.value)} options={CUSTOMER_HEALTH_OPTIONS} />
+            <Field label="Health Score" value={healthScore} onChange={(event) => setHealthScore(event.target.value)} placeholder="60" />
+          </div>
+        </div>
+        <TextAreaField label="Internal Notes" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Context, risks, onboarding state, and internal handling notes." rows={5} />
       </Card>
-      <SaveBar primaryLabel="Create Customer" onSave={() => { const id = createCustomer({ name, contact }); router.push(`/customers/${id}`); }} />
+      <SaveBar primaryLabel="Create Customer" onSave={() => {
+        const sourceForm = forms.find((form) => form.id === sourceFormId);
+        const id = createCustomer({
+          name,
+          companyName: name,
+          contact,
+          contactPerson: contact,
+          email,
+          phone,
+          website,
+          organizationNumber,
+          billingAddress,
+          tags: tags.split(',').map((tag) => tag.trim()).filter(Boolean),
+          owner,
+          stage,
+          sourceLeadId,
+          leadId: sourceLeadId || null,
+          sourceFormId,
+          sourceLabel: sourceForm?.name || 'Created manually',
+          industry,
+          companySize,
+          health,
+          healthScore: Number(healthScore) || 0,
+          notes,
+          team: [owner],
+        });
+        router.push(`/customers/${id}`);
+      }} />
     </PageShell>
   );
 }
 
 export function NewTaskPage() {
   const router = useRouter();
-  const { createTask } = useBuzzStore();
+  const { createTask, leads, customers, forms, invoices, files } = useBuzzStore();
   const [title, setTitle] = useState('');
+  const [owner, setOwner] = useState('Alex');
+  const [priority, setPriority] = useState('medium');
+  const [dueDate, setDueDate] = useState('');
+  const [dueTime, setDueTime] = useState('');
+  const [relatedType, setRelatedType] = useState('lead');
+  const [relatedId, setRelatedId] = useState('');
+  const [type, setType] = useState('follow-up');
+  const [status, setStatus] = useState('todo');
+  const [notes, setNotes] = useState('');
+  const [reminderEnabled, setReminderEnabled] = useState(true);
+  const [reminderOffset, setReminderOffset] = useState('1h');
+  const [recurringEnabled, setRecurringEnabled] = useState(false);
+  const [recurringRule, setRecurringRule] = useState('weekly');
+  const [watchers, setWatchers] = useState('');
+  const [collaborators, setCollaborators] = useState('');
+  const relatedCollections = {
+    lead: leads.map((item) => ({ value: item.id, label: `${item.name} · ${item.company}` })),
+    customer: customers.map((item) => ({ value: item.id, label: `${item.name} · ${item.contact}` })),
+    form: forms.map((item) => ({ value: item.id, label: `${item.name} · ${item.code}` })),
+    invoice: invoices.map((item) => ({ value: item.id, label: `${item.id} · ${item.customer}` })),
+    file: files.map((item) => ({ value: item.id, label: `${item.name} · ${item.type}` })),
+  };
+  const relatedOptions = relatedCollections[relatedType] || [];
   return (
     <PageShell title="New Task" subtitle="Create task">
-      <Card style={{ padding: 18 }}>
-        <Field label="Task Title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Follow up proposal" />
+      <Card style={{ padding: 18, display: 'grid', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <Field label="Task Title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Follow up proposal" />
+          <SelectField label="Task Type" value={type} onChange={(event) => setType(event.target.value)} options={TASK_TYPE_OPTIONS} />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+          <SelectField label="Owner" value={owner} onChange={(event) => setOwner(event.target.value)} options={['Alex', 'Sarah', 'Mika'].map((value) => ({ value, label: value }))} />
+          <SelectField label="Priority" value={priority} onChange={(event) => setPriority(event.target.value)} options={TASK_PRIORITY_OPTIONS} />
+          <SelectField label="Status" value={status} onChange={(event) => setStatus(event.target.value)} options={TASK_STATUS_OPTIONS} />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+          <SelectField label="Related Record Type" value={relatedType} onChange={(event) => { setRelatedType(event.target.value); setRelatedId(''); }} options={[{ value: 'lead', label: 'Lead' }, { value: 'customer', label: 'Customer' }, { value: 'form', label: 'Form' }, { value: 'invoice', label: 'Invoice' }, { value: 'file', label: 'File' }]} />
+          <SelectField label="Related Record" value={relatedId} onChange={(event) => setRelatedId(event.target.value)} options={[{ value: '', label: `Select ${relatedType}` }, ...relatedOptions]} />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <Field label="Due Date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} placeholder="2026-04-25" />
+            <Field label="Due Time" value={dueTime} onChange={(event) => setDueTime(event.target.value)} placeholder="14:30" />
+          </div>
+        </div>
+        <TextAreaField label="Notes / Instructions" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What needs to happen, constraints, expected outcome, and handoff notes." rows={5} />
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <Field label="Watchers" value={watchers} onChange={(event) => setWatchers(event.target.value)} placeholder="Sarah, Mika" />
+          <Field label="Collaborators" value={collaborators} onChange={(event) => setCollaborators(event.target.value)} placeholder="Alex, Sarah" />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gap: 10 }}>
+            <ToggleField label="Reminder" checked={reminderEnabled} onChange={(event) => setReminderEnabled(event.target.checked)} hint="Send a reminder before the due time." />
+            <SelectField label="Reminder Offset" value={reminderOffset} onChange={(event) => setReminderOffset(event.target.value)} options={TASK_REMINDER_OPTIONS} />
+          </div>
+          <div style={{ display: 'grid', gap: 10 }}>
+            <ToggleField label="Recurring Task" checked={recurringEnabled} onChange={(event) => setRecurringEnabled(event.target.checked)} hint="Create a repeating follow-up rhythm." />
+            <SelectField label="Recurring Rule" value={recurringRule} onChange={(event) => setRecurringRule(event.target.value)} options={TASK_RECURRING_OPTIONS} />
+          </div>
+        </div>
       </Card>
-      <SaveBar primaryLabel="Create Task" onSave={() => { const id = createTask({ title }); router.push(`/tasks/${id}`); }} />
+      <SaveBar primaryLabel="Create Task" onSave={() => {
+        const relatedRecord = relatedOptions.find((item) => item.value === relatedId);
+        const id = createTask({
+          title,
+          owner,
+          priority,
+          due: dueDate ? `${dueDate}${dueTime ? ` ${dueTime}` : ''}` : 'Tomorrow',
+          dueDate,
+          dueTime,
+          related: { type: relatedType, id: relatedId, label: relatedRecord?.label || `${relatedType} record` },
+          type,
+          status,
+          notes,
+          reminder: { enabled: reminderEnabled, offset: reminderOffset },
+          recurring: { enabled: recurringEnabled, rule: recurringRule },
+          watchers: watchers.split(',').map((item) => item.trim()).filter(Boolean),
+          collaborators: collaborators.split(',').map((item) => item.trim()).filter(Boolean),
+        });
+        router.push(`/tasks/${id}`);
+      }} />
     </PageShell>
   );
 }
@@ -1543,14 +2611,62 @@ export function NewInvoicePage() {
 
 export function NewCommunicationPage() {
   const router = useRouter();
-  const { logCommunication } = useBuzzStore();
+  const { customers, forms, leads, logCommunication, tasks } = useBuzzStore();
   const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [type, setType] = useState('email');
+  const [status, setStatus] = useState('draft');
+  const [internal, setInternal] = useState(false);
+  const [template, setTemplate] = useState('blank');
+  const [scheduledFor, setScheduledFor] = useState('');
+  const [relatedType, setRelatedType] = useState('lead');
+  const [relatedId, setRelatedId] = useState('');
+  const [attachments, setAttachments] = useState('');
+  const relatedCollections = {
+    lead: leads.map((item) => ({ value: item.id, label: `${item.name} · ${item.company}` })),
+    customer: customers.map((item) => ({ value: item.id, label: `${item.companyName || item.name} · ${item.contactPerson || item.contact}` })),
+    task: tasks.map((item) => ({ value: item.id, label: `${item.title} · ${item.owner}` })),
+    form: forms.map((item) => ({ value: item.id, label: `${item.name} · ${item.code}` })),
+  };
+  const relatedOptions = relatedCollections[relatedType] || [];
   return (
-    <PageShell title="New Note" subtitle="Create communication item">
-      <Card style={{ padding: 18 }}>
-        <Field label="Title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Proposal follow-up note" />
+    <PageShell title="New Communication" subtitle="Compose a message, internal note, or scheduled send">
+      <Card style={{ padding: 18, display: 'grid', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <Field label="Title / Subject" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Proposal follow-up note" />
+          <SelectField label="Template" value={template} onChange={(event) => setTemplate(event.target.value)} options={COMMUNICATION_TEMPLATE_OPTIONS} />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+          <SelectField label="Type" value={type} onChange={(event) => setType(event.target.value)} options={[{ value: 'email', label: 'Email' }, { value: 'call', label: 'Call' }, { value: 'meeting', label: 'Meeting' }, { value: 'note', label: 'Note' }, { value: 'comment', label: 'Comment' }, { value: 'follow_up', label: 'Follow-up' }]} />
+          <SelectField label="Status" value={status} onChange={(event) => setStatus(event.target.value)} options={COMMUNICATION_STATUS_OPTIONS} />
+          <Field label="Scheduled Send" value={scheduledFor} onChange={(event) => setScheduledFor(event.target.value)} placeholder="2026-04-23 09:00" />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <SelectField label="Related Entity" value={relatedType} onChange={(event) => { setRelatedType(event.target.value); setRelatedId(''); }} options={[{ value: 'lead', label: 'Lead' }, { value: 'customer', label: 'Customer' }, { value: 'task', label: 'Task' }, { value: 'form', label: 'Form' }]} />
+          <SelectField label="Linked Record" value={relatedId} onChange={(event) => setRelatedId(event.target.value)} options={[{ value: '', label: `Select ${relatedType}` }, ...relatedOptions]} />
+        </div>
+        <ToggleField label="Internal Note" checked={internal} onChange={(event) => setInternal(event.target.checked)} hint="Use internal for notes/comments and external for customer-facing messages." />
+        <Field label="Attachments" value={attachments} onChange={(event) => setAttachments(event.target.value)} placeholder="proposal.pdf, brief.docx" />
+        <TextAreaField label="Message Body" value={body} onChange={(event) => setBody(event.target.value)} placeholder="Write the message, thread context, or internal note here." rows={6} />
       </Card>
-      <SaveBar primaryLabel="Save Note" onSave={() => { const id = logCommunication({ title }); router.push(`/communication/${id}`); }} />
+      <SaveBar primaryLabel="Save Communication" onSave={() => {
+        const relatedRecord = relatedOptions.find((item) => item.value === relatedId);
+        const id = logCommunication({
+          title,
+          detail: body || 'Created from communication center',
+          body,
+          type,
+          status,
+          internal,
+          template,
+          scheduledFor,
+          related: { type: relatedType, id: relatedId, label: relatedRecord?.label || `${relatedType} record` },
+          linked: relatedRecord?.label || `${relatedType} record`,
+          attachments: attachments.split(',').map((item) => item.trim()).filter(Boolean),
+          threadId: relatedId || `thread-${Date.now()}`,
+        });
+        router.push(`/communication/${id}`);
+      }} />
     </PageShell>
   );
 }
@@ -1573,21 +2689,120 @@ export function CommunicationDetailPage({ id }) {
   const { communications } = useBuzzStore();
   const item = communications.find((row) => row.id === id);
   if (!item) return <PageShell title="Communication not found" subtitle="The selected communication record could not be found."><EmptyState title="Missing communication" detail="Open the record again from the communication page." /></PageShell>;
-  return <PageShell title={item.title} subtitle={`${item.type} · ${item.linked}`}><Card style={{ padding: 18 }}><div style={{ fontSize: 13, color: 'var(--text-2)' }}>{item.detail}</div></Card></PageShell>;
+  const thread = communications.filter((row) => row.threadId === item.threadId);
+  return <PageShell title={item.title} subtitle={`${item.type} · ${item.linked}`}>
+    <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: 16 }}>
+      <Card style={{ padding: 18 }}>
+        <Label style={{ marginBottom: 10 }}>Conversation Thread</Label>
+        <div style={{ display: 'grid', gap: 12 }}>
+          {thread.map((message) => <div key={message.id} style={{ padding: 12, borderRadius: 10, background: UI.panelSoft, border: `1px solid ${UI.border}` }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}><div style={{ fontSize: 13, fontWeight: 700 }}>{message.title}</div><Badge color={message.status === 'sent' ? 'green' : message.status === 'failed' ? 'red' : message.status === 'queued' ? 'yellow' : 'gray'}>{message.status}</Badge></div><div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>{message.internal ? 'Internal' : 'External'} · {message.template}</div><div style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 10, lineHeight: 1.7 }}>{message.body || message.detail}</div></div>)}
+        </div>
+      </Card>
+      <div style={{ display: 'grid', gap: 16 }}>
+        <Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Message Settings</Label><div style={{ display: 'grid', gap: 8 }}><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Type: {item.type}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Status: {item.status}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Scheduled: {item.scheduledFor || 'Not scheduled'}</div><div style={{ fontSize: 12, color: 'var(--text-2)' }}>Owner: {item.owner}</div></div></Card>
+        <Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Related Record</Label><div style={{ fontSize: 12, color: 'var(--text-2)' }}>{item.related?.label || item.linked}</div><div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>{item.related?.type || 'record'} · {item.related?.id || 'manual'}</div></Card>
+        <Card style={{ padding: 18 }}><Label style={{ marginBottom: 10 }}>Attachments</Label><div style={{ display: 'grid', gap: 8 }}>{(item.attachments?.length ? item.attachments : ['No attachments']).map((attachment) => <div key={attachment} style={{ fontSize: 12, color: 'var(--text-2)' }}>{attachment}</div>)}</div></Card>
+      </div>
+    </div>
+  </PageShell>;
 }
 
 export function TaskDetailPage({ id }) {
-  const { tasks } = useBuzzStore();
+  const router = useRouter();
+  const { communications, logs, tasks, updateTask } = useBuzzStore();
   const task = tasks.find((row) => row.id === id);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState({});
+  useEffect(() => {
+    if (task) {
+      setDraft({
+        owner: task.owner || 'Alex',
+        type: task.type || 'follow-up',
+        priority: task.priority || 'medium',
+        status: task.status || 'todo',
+        dueDate: task.dueDate || '',
+        dueTime: task.dueTime || '',
+        notes: task.notes || '',
+      });
+    }
+  }, [task]);
   if (!task) return <PageShell title="Task not found" subtitle="The selected task could not be found."><EmptyState title="Missing task" detail="Open the task again from the task list." /></PageShell>;
-  return <PageShell title={task.title} subtitle={`${task.id} · ${task.status} · ${task.due}`}><Card style={{ padding: 18 }}><div style={{ fontSize: 13, color: 'var(--text-2)' }}>Linked to {task.link}</div></Card></PageShell>;
+  const timelineItems = buildTimelineEntries({
+    logs,
+    communications,
+    tasks,
+    matchObject: (value) => String(value || '').includes(task.title) || String(value || '').includes(task.id),
+    matchCommunication: (item) => item.related?.id === task.id || item.linked === `Task ${task.id}` || item.linked?.includes(task.title),
+    matchTask: (row) => row.id === task.id,
+  });
+  return (
+    <PageShell title={task.title} subtitle={`${task.id} · ${task.status} · ${task.due}`}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: 16 }}>
+        <InlineEditor editing={editing} onEditToggle={() => setEditing((current) => !current)} onSave={() => { updateTask(task.id, draft); setEditing(false); }}>
+          <Label style={{ marginBottom: 12 }}>Execution</Label>
+          {editing ? <div style={{ display: 'grid', gap: 12 }}><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}><SelectField label="Owner" value={draft.owner || 'Alex'} onChange={(event) => setDraft((current) => ({ ...current, owner: event.target.value }))} options={TEAM_MEMBERS.map((member) => ({ value: member.name, label: member.name }))} /><SelectField label="Type" value={draft.type || 'follow-up'} onChange={(event) => setDraft((current) => ({ ...current, type: event.target.value }))} options={TASK_TYPE_OPTIONS} /><SelectField label="Priority" value={draft.priority || 'medium'} onChange={(event) => setDraft((current) => ({ ...current, priority: event.target.value }))} options={TASK_PRIORITY_OPTIONS} /></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}><SelectField label="Status" value={draft.status || 'todo'} onChange={(event) => setDraft((current) => ({ ...current, status: event.target.value }))} options={TASK_STATUS_OPTIONS} /><Field label="Due Date" value={draft.dueDate || ''} onChange={(event) => setDraft((current) => ({ ...current, dueDate: event.target.value }))} placeholder="2026-04-30" /><Field label="Due Time" value={draft.dueTime || ''} onChange={(event) => setDraft((current) => ({ ...current, dueTime: event.target.value }))} placeholder="14:30" /></div><TextAreaField label="Notes / Instructions" value={draft.notes || ''} onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))} rows={4} /></div> : <><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+            <div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Owner</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{task.owner}</div></div>
+            <div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Type</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{task.type}</div></div>
+            <div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Priority</div><div style={{ marginTop: 4 }}><Badge color={badgeColor(task.priority)}>{task.priority}</Badge></div></div>
+            <div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Status</div><div style={{ marginTop: 4 }}><Badge color={badgeColor(task.status)}>{task.status}</Badge></div></div>
+            <div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Due Date</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{task.dueDate || 'Not set'}</div></div>
+            <div><div style={{ fontSize: 12, color: 'var(--text-3)' }}>Due Time</div><div style={{ fontSize: 13, fontWeight: 700, marginTop: 4 }}>{task.dueTime || 'Not set'}</div></div>
+          </div>
+          <div style={{ marginTop: 16 }}>
+            <Label style={{ marginBottom: 8 }}>Notes / Instructions</Label>
+            <div style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.7 }}>{task.notes || 'No instructions added yet.'}</div>
+          </div></>}
+        </InlineEditor>
+        <div style={{ display: 'grid', gap: 16 }}>
+          <TimelineList items={timelineItems} emptyTitle="No task history yet" emptyDetail="Assign, comment, or complete this task to make the execution trail visible." actionLabel="Open Communication" actionHref="/communication" />
+          <Card style={{ padding: 18 }}>
+            <Label style={{ marginBottom: 12 }}>Linked Record</Label>
+            <button type="button" onClick={() => router.push(recordPathFromTask(task))} style={{ background: 'transparent', border: 'none', padding: 0, textAlign: 'left' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{task.related?.label || task.link}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>{task.related?.type || 'record'} · {task.related?.id || 'manual link'}</div>
+            </button>
+          </Card>
+          <Card style={{ padding: 18 }}>
+            <Label style={{ marginBottom: 12 }}>Coordination</Label>
+            <div style={{ display: 'grid', gap: 10 }}>
+              <div style={{ fontSize: 12, color: 'var(--text-2)' }}>Reminder: {task.reminder?.enabled ? `On · ${task.reminder.offset}` : 'Off'}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)' }}>Recurring: {task.recurring?.enabled ? `On · ${task.recurring.rule}` : 'Off'}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)' }}>Watchers: {task.watchers?.length ? task.watchers.join(', ') : 'None'}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)' }}>Collaborators: {task.collaborators?.length ? task.collaborators.join(', ') : 'None'}</div>
+            </div>
+          </Card>
+        </div>
+      </div>
+    </PageShell>
+  );
 }
 
 export function InvoiceDetailPage({ id }) {
-  const { invoices } = useBuzzStore();
+  const { communications, invoices, logs, tasks, setInvoiceStatus, updateInvoice } = useBuzzStore();
   const invoice = invoices.find((row) => row.id === id);
+  const [editing, setEditing] = useState(false);
+  const [amount, setAmount] = useState('');
+  const [due, setDue] = useState('');
+  const [partialAmount, setPartialAmount] = useState('');
+  useEffect(() => {
+    if (invoice) {
+      setAmount(invoice.amount || '');
+      setDue(invoice.due || '');
+      setPartialAmount(invoice.paid === 'SEK 0' ? '' : invoice.paid || '');
+    }
+  }, [invoice]);
   if (!invoice) return <PageShell title="Invoice not found" subtitle="The selected invoice could not be found."><EmptyState title="Missing invoice" detail="Open the invoice again from the invoice list." /></PageShell>;
-  return <PageShell title={invoice.id} subtitle={`${invoice.customer} · ${invoice.status}`}><Card style={{ padding: 18 }}><div style={{ fontSize: 13, color: 'var(--text-2)' }}>{invoice.amount} · due {invoice.due}</div></Card></PageShell>;
+  const timelineItems = buildTimelineEntries({
+    logs,
+    communications,
+    tasks,
+    invoices,
+    matchObject: (value) => String(value || '').includes(invoice.id) || String(value || '').includes(invoice.customer),
+    matchCommunication: (item) => item.linked === `Invoice ${invoice.id}` || item.detail?.includes(invoice.id),
+    matchTask: (task) => task.related?.id === invoice.id || task.related?.label === invoice.id,
+    matchInvoice: (row) => row.id === invoice.id,
+  });
+  return <PageShell title={invoice.id} subtitle={`${invoice.customer} · ${invoice.status}`}><div style={{ display: 'grid', gap: 16 }}><InlineEditor editing={editing} onEditToggle={() => setEditing((current) => !current)} onSave={() => { updateInvoice(invoice.id, { amount, due }); setEditing(false); }} actions={<><Button variant="subtle" onClick={() => setInvoiceStatus(invoice.id, 'paid')}>Mark Paid</Button><Button variant="subtle" onClick={() => setInvoiceStatus(invoice.id, 'partial', partialAmount || 'SEK 5,000')}>Mark Partial</Button><Button variant="danger" onClick={() => setInvoiceStatus(invoice.id, 'failed')}>Mark Failed</Button></>}><Label style={{ marginBottom: 10 }}>Invoice Status Actions</Label>{editing ? <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}><Field label="Amount" value={amount} onChange={(event) => setAmount(event.target.value)} /><Field label="Due Date" value={due} onChange={(event) => setDue(event.target.value)} placeholder="2026-04-30" /></div> : <><div style={{ fontSize: 13, color: 'var(--text-2)' }}>{invoice.amount} · due {invoice.due}</div><div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}><Badge color={badgeColor(invoice.status)}>{invoice.status}</Badge><Badge color="gray">Paid {invoice.paid}</Badge></div><div style={{ marginTop: 12, maxWidth: 220 }}><Field label="Partial Amount" value={partialAmount} onChange={(event) => setPartialAmount(event.target.value)} placeholder="SEK 5,000" /></div></>}</InlineEditor><TimelineList items={timelineItems} emptyTitle="No invoice history yet" emptyDetail="Invoice reminders, payment events, and finance tasks will appear here." actionLabel="Open Invoices" actionHref="/invoices" /></div></PageShell>;
 }
 
 export function FileDetailPage({ id }) {
